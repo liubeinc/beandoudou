@@ -231,7 +231,8 @@
           <button id="toggleGrid" class="on">网格线</button>
           <button id="downloadPng">下载图纸+清单</button>
           <button id="downloadPngPlain">纯色块 PNG</button>
-          <button id="downloadCsv">下载 CSV</button>
+          <button id="downloadCsv">下载色号矩阵</button>
+          <button id="downloadShop">购物清单 CSV</button>
           <button id="printBtn">打印</button>
         </div>
       </div>
@@ -798,6 +799,25 @@ function exportCsv(){
   URL.revokeObjectURL(a.href);
 }
 
+/* 购物清单：色号 + 颗数 + 颜色hex，按色号自然排序，末尾合计 */
+function exportShopList(){
+  const w=gridW,h=gridH; if(!w) return;
+  const freq=new Map();
+  for(const g of grid) if(g>=0) freq.set(g,(freq.get(g)||0)+1);
+  const arr=[...freq.entries()].sort((a,b)=>codeSort(RGB[a[0]].code,RGB[b[0]].code));
+  const total=arr.reduce((a,[,n])=>a+n,0);
+  const lines=['色号,颗数,颜色'];
+  arr.forEach(([g,n])=>{ lines.push(`${RGB[g].code},${n},${RGB[g].hex}`); });
+  lines.push(`合计,${total},`);
+  const csv='﻿'+lines.join('\r\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.download=`拼豆购物清单_${w}x${h}.csv`;
+  a.href=URL.createObjectURL(blob);
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 /* ============ 事件 ============ */
 drop.addEventListener('click',()=>file.click());
 drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('over');});
@@ -883,6 +903,7 @@ $('toggleGrid').addEventListener('click',function(){ showGrid=!showGrid; this.cl
 $('downloadPng').addEventListener('click',()=>exportPng());
 $('downloadPngPlain').addEventListener('click',()=>exportPngPlain());
 $('downloadCsv').addEventListener('click',()=>exportCsv());
+$('downloadShop').addEventListener('click',()=>exportShopList());
 $('printBtn').addEventListener('click',()=>window.print());
 
 /* ============ 图片裁切 ============ */
@@ -955,6 +976,57 @@ cropBox.addEventListener('pointermove',e=>{
 });
 cropBox.addEventListener('pointerup',()=>{ cropDrag=null; });
 cropBox.addEventListener('pointercancel',()=>{ cropDrag=null; });
+
+/* ============ 记忆上次设置 (localStorage) ============ */
+const LS_KEY='beandou_settings_v1';
+function saveSettings(){
+  const data={
+    pal:PAL, mardMode:MARD_MODE,
+    bead:$('beadSize').querySelector('.on').dataset.v,
+    width:+$('width').value, height:+$('height').value,
+    keepRatio:$('keepRatio').checked, colorLimit:+$('colorLimit').value,
+    shape:$('shape').querySelector('.on').dataset.v,
+    removeBg:$('removeBg').checked, dither:$('dither').checked,
+    brightness:+$('brightness').value, contrast:+$('contrast').value, saturation:+$('saturation').value
+  };
+  try{ localStorage.setItem(LS_KEY, JSON.stringify(data)); }catch(e){}
+}
+function restoreSettings(){
+  let d=null;
+  try{ d=JSON.parse(localStorage.getItem(LS_KEY)||'null'); }catch(e){}
+  if(!d) return;
+  // 品牌
+  if(d.pal && PALETTES[d.pal]){
+    $('brand').querySelectorAll('button').forEach(x=>x.classList.remove('on'));
+    const btn=$('brand').querySelector(`[data-v="${d.pal}"]`); if(btn) btn.classList.add('on');
+    $('mardModeRow').style.display = (d.pal==='mard') ? 'block' : 'none';
+  }
+  // MARD 色数
+  if(d.mardMode==='221'||d.mardMode==='291'){ MARD_MODE=d.mardMode; $('mardMode').value=d.mardMode; const mb=$('brand').querySelector('[data-v="mard"]'); if(mb) mb.textContent='MARD · '+d.mardMode+'色'; }
+  setPalette(d.pal && PALETTES[d.pal] ? d.pal : 'mard');
+  // 规格
+  if(d.bead){ const b=$('beadSize').querySelector(`[data-v="${d.bead}"]`); if(b){ $('beadSize').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); } }
+  // 滑块
+  if(d.width){ $('width').value=d.width; $('wVal').textContent=d.width; }
+  if(d.height){ $('height').value=d.height; $('hVal').textContent=d.height; }
+  if(typeof d.keepRatio==='boolean') $('keepRatio').checked=d.keepRatio;
+  if(d.colorLimit){ $('colorLimit').value=d.colorLimit; $('colorVal').textContent=d.colorLimit>=48?'不限':d.colorLimit; }
+  if(d.shape){ const b=$('shape').querySelector(`[data-v="${d.shape}"]`); if(b){ $('shape').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); } }
+  if(typeof d.removeBg==='boolean') $('removeBg').checked=d.removeBg;
+  if(typeof d.dither==='boolean') $('dither').checked=d.dither;
+  if(d.brightness!=null){ $('brightness').value=d.brightness; $('briVal').textContent=d.brightness; }
+  if(d.contrast!=null){ $('contrast').value=d.contrast; $('conVal').textContent=d.contrast; }
+  if(d.saturation!=null){ $('saturation').value=d.saturation; $('satVal').textContent=d.saturation; }
+}
+restoreSettings();
+
+// 任意设置变化都保存（change 捕获 checkbox/select/range 松手; click 捕获按钮切换; input 捕获 range 拖动）
+['change','click','input'].forEach(ev=>{
+  document.addEventListener(ev, e=>{
+    const t=e.target;
+    if(t && t.closest && t.closest('#settingsCard,#brand,#mardModeRow')) saveSettings();
+  });
+});
 </script>
 </body>
 </html>
