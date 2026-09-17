@@ -72,6 +72,14 @@
   .row-actions .submenu{left:auto;right:0;top:calc(100% + 4px);min-width:132px}
   .row-actions .submenu button{display:flex;align-items:center;gap:10px;width:100%;padding:8px 12px;border:none;border-radius:7px;background:transparent;font-size:13px;font-weight:600;color:#4a5361;white-space:normal;text-align:left;cursor:pointer;transition:.12s}
   .row-actions .submenu button:hover{background:var(--pri-soft);color:var(--pri)}
+  .split-group{position:relative;display:inline-flex;align-items:center}
+  .tsep{width:1px;align-self:stretch;background:var(--line);margin:3px 2px}
+  .toolbar .submenu{left:0;top:calc(100% + 6px);min-width:172px}
+  .toolbar .submenu button{display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;border:none;border-radius:7px;background:transparent;font-size:13px;font-weight:600;color:#4a5361;white-space:nowrap;text-align:left;cursor:pointer;transition:.12s;box-shadow:none}
+  .toolbar .submenu button:hover{background:var(--pri-soft);color:var(--pri)}
+  .toolbar .submenu button.on{background:var(--pri-soft);color:var(--pri)}
+  .toolbar .submenu button .tick{margin-left:auto;color:var(--pri);font-weight:800}
+  .toolbar .submenu button:not(.on) .tick{visibility:hidden}
   .seg button{flex:1;min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:#fff;cursor:pointer;font-size:13px;font-weight:600;color:#4a5361;transition:.12s;white-space:nowrap}
   .seg button:hover{border-color:var(--pri-2)}
   .seg button:active{background:#eef0fe}
@@ -308,12 +316,22 @@
       <div class="preview-head">
         <div class="dims">图纸尺寸 <b id="dimsText">—</b> · 约 <b id="sizeText">—</b> <span class="bead-total" id="beadTotal" style="display:none">共需 <b id="totalBeads">0</b> 颗豆子</span></div>
         <div class="toolbar" id="toolbar" style="display:none">
-          <button id="toggleCode" class="on">色号标注</button>
-          <button id="toggleGrid" class="on">网格线</button>
-          <button id="downloadPng">下载图纸+清单</button>
-          <button id="downloadPngPlain">纯色块 PNG</button>
-          <button id="downloadCsv">下载色号矩阵</button>
-          <button id="downloadShop">购物清单 CSV</button>
+          <div class="split-group">
+            <button id="toggleCode" class="on"><span class="lbl">色号标注</span><span class="caret">▾</span></button>
+            <div class="submenu" id="displayMenu" hidden>
+              <button id="toggleGrid" class="on">网格线<span class="tick">✓</span></button>
+            </div>
+          </div>
+          <span class="tsep"></span>
+          <div class="split-group">
+            <button id="downloadBtn"><span class="lbl">下载</span><span class="caret">▾</span></button>
+            <div class="submenu" id="downloadMenu" hidden>
+              <button data-dl="png">下载图纸+清单</button>
+              <button data-dl="plain">纯色块 PNG</button>
+              <button data-dl="csv">下载色号矩阵</button>
+              <button data-dl="shop">购物清单 CSV</button>
+            </div>
+          </div>
           <button id="printBtn">打印</button>
         </div>
       </div>
@@ -974,6 +992,8 @@ document.addEventListener('click',e=>{
   if(!e.target.closest('#applySize,#sizeMenu')) $('sizeMenu').hidden=true;
   if(!e.target.closest('#applyColor,#colorMenu')) $('colorMenu').hidden=true;
   if(!e.target.closest('#applyTone,#toneMenu')) $('toneMenu').hidden=true;
+  if(!e.target.closest('#toggleCode,#displayMenu')) $('displayMenu').hidden=true;
+  if(!e.target.closest('#downloadBtn,#downloadMenu')) $('downloadMenu').hidden=true;
 });
 /* 规格 */
 $('beadSize').addEventListener('click',e=>{
@@ -1065,13 +1085,25 @@ setupApplySplit('applySize','sizeMenu',()=>{ resetSliders(['width','height']); s
 setupApplySplit('applyColor','colorMenu',()=>{ resetSliders(['colorLimit']); schedulePreview($('applyColor')); });
 setupApplySplit('applyTone','toneMenu',()=>{ resetSliders(['brightness','contrast','saturation']); schedulePreview($('applyTone')); });
 
-/* 工具栏 */
-$('toggleCode').addEventListener('click',function(){ showCode=!showCode; this.classList.toggle('on',showCode); draw(); });
-$('toggleGrid').addEventListener('click',function(){ showGrid=!showGrid; this.classList.toggle('on',showGrid); draw(); });
-$('downloadPng').addEventListener('click',()=>exportPng());
-$('downloadPngPlain').addEventListener('click',()=>exportPngPlain());
-$('downloadCsv').addEventListener('click',()=>exportCsv());
-$('downloadShop').addEventListener('click',()=>exportShopList());
+/* 工具栏：显示组（色号标注 ▾ 网格线）+ 导出组（下载 ▾ 打印） */
+$('toggleCode').addEventListener('click',function(e){
+  if(e.target.closest('.caret')){ $('displayMenu').hidden=!$('displayMenu').hidden; return; }
+  showCode=!showCode; this.classList.toggle('on',showCode); draw();
+});
+$('toggleGrid').addEventListener('click',function(){
+  showGrid=!showGrid; this.classList.toggle('on',showGrid); draw();
+  $('displayMenu').hidden=true;
+});
+$('downloadBtn').addEventListener('click',function(){ $('downloadMenu').hidden=!$('downloadMenu').hidden; });
+$('downloadMenu').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  $('downloadMenu').hidden=true;
+  const act=b.dataset.dl;
+  if(act==='png') exportPng();
+  else if(act==='plain') exportPngPlain();
+  else if(act==='csv') exportCsv();
+  else if(act==='shop') exportShopList();
+});
 $('printBtn').addEventListener('click',()=>window.print());
 
 /* ============ 图片裁切 ============ */
