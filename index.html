@@ -77,6 +77,8 @@
   .preview-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
   .preview-head .dims{font-size:14px;font-weight:700;color:var(--mut)}
   .preview-head .dims b{color:var(--text);font-size:17px}
+  .bead-total{display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:4px 12px;border-radius:999px;background:var(--pri-soft);color:var(--pri);font-size:14px;font-weight:800}
+  .bead-total b{color:var(--pri);font-size:18px}
   .toolbar{display:flex;gap:8px;flex-wrap:wrap}
   .toolbar button{padding:8px 14px;border:1px solid var(--line);border-radius:9px;background:#fff;cursor:pointer;font-size:13px;font-weight:600;color:#4a5361;transition:.12s}
   .toolbar button:hover{border-color:var(--pri);color:var(--pri)}
@@ -262,7 +264,7 @@
   <div class="right">
     <div class="card">
       <div class="preview-head">
-        <div class="dims">图纸尺寸 <b id="dimsText">—</b> · 约 <b id="sizeText">—</b></div>
+        <div class="dims">图纸尺寸 <b id="dimsText">—</b> · 约 <b id="sizeText">—</b> <span class="bead-total" id="beadTotal" style="display:none">共需 <b id="totalBeads">0</b> 颗豆子</span></div>
         <div class="toolbar" id="toolbar" style="display:none">
           <button id="toggleCode" class="on">色号标注</button>
           <button id="toggleGrid" class="on">网格线</button>
@@ -685,6 +687,8 @@ function buildStats(){
   const total=[...freq.values()].reduce((a,b)=>a+b,0);
   const arr=[...freq.entries()].sort((a,b)=>codeSort(RGB[a[0]].code,RGB[b[0]].code));
   $('statsTitle').textContent=`色号对照统计（${arr.length} 色 · 共 ${total} 颗豆子）`;
+  $('totalBeads').textContent=total;
+  $('beadTotal').style.display='inline-flex';
   const box=$('stats'); box.innerHTML='';
   if(arr.length===0){ box.innerHTML='<div class="stat-empty">无有效色号</div>'; return; }
   $('statsWrap').style.display='block';
