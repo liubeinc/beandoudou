@@ -56,6 +56,9 @@
   .row-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
   .row-head label{margin-bottom:0}
   .row-head .btn.ghost{margin:0;flex:0 0 auto;padding:6px 12px}
+  .row-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+  .btn.ghost.reset{color:var(--mut);border-color:var(--line)}
+  .btn.ghost.reset:hover{color:var(--pri);border-color:var(--pri)}
   .seg{display:flex;gap:8px;flex-wrap:wrap}
   #brand{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   .seg button{flex:1;min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:#fff;cursor:pointer;font-size:13px;font-weight:600;color:#4a5361;transition:.12s;white-space:nowrap}
@@ -220,7 +223,10 @@
       <div class="row">
         <div class="row-head">
           <label>高度（颗数）<span class="val" id="hVal">60</span></label>
-          <button class="btn ghost" id="applySize">应用更改</button>
+          <div class="row-actions">
+            <button class="btn ghost reset" id="resetSize">恢复默认</button>
+            <button class="btn ghost" id="applySize">应用更改</button>
+          </div>
         </div>
         <input type="range" id="height" min="8" max="200" value="60" step="1">
         <div class="range-labels"><span>8</span><span>200</span></div>
@@ -233,7 +239,10 @@
       <div class="row">
         <div class="row-head">
           <label>颜色数量 <span class="val" id="colorVal">不限</span></label>
-          <button class="btn ghost" id="applyColor">应用更改</button>
+          <div class="row-actions">
+            <button class="btn ghost reset" id="resetColor">恢复默认</button>
+            <button class="btn ghost" id="applyColor">应用更改</button>
+          </div>
         </div>
         <input type="range" id="colorLimit" min="1" max="48" value="48" step="1">
         <div class="range-labels"><span>1</span><span>48</span></div>
@@ -267,7 +276,10 @@
       <div class="row">
         <div class="row-head">
           <label>调色 · 饱和度 <span class="val" id="satVal">0</span></label>
-          <button class="btn ghost" id="applyTone">应用更改</button>
+          <div class="row-actions">
+            <button class="btn ghost reset" id="resetTone">恢复默认</button>
+            <button class="btn ghost" id="applyTone">应用更改</button>
+          </div>
         </div>
         <input type="range" id="saturation" min="-100" max="100" value="0" step="1">
       </div>
@@ -1004,6 +1016,21 @@ $('generate').addEventListener('click',()=>generate());
 $('applySize').addEventListener('click',()=>generate());
 $('applyColor').addEventListener('click',()=>generate());
 $('applyTone').addEventListener('click',()=>generate());
+
+/* 恢复默认：三组滑杆各自复位到默认值（实时预览 + 待应用，点「应用更改」才提交） */
+const DEFAULTS={ width:60, height:60, colorLimit:48, brightness:0, contrast:0, saturation:0 };
+function resetSliders(ids){
+  ids.forEach(id=>{ $(id).value=DEFAULTS[id]; });
+  $('wVal').textContent=$('width').value;
+  $('hVal').textContent=$('height').value;
+  $('colorVal').textContent=(+$('colorLimit').value)>=48?'不限':$('colorLimit').value;
+  $('briVal').textContent=$('brightness').value;
+  $('conVal').textContent=$('contrast').value;
+  $('satVal').textContent=$('saturation').value;
+}
+$('resetSize').addEventListener('click',()=>{ resetSliders(['width','height']); schedulePreview($('applySize')); });
+$('resetColor').addEventListener('click',()=>{ resetSliders(['colorLimit']); schedulePreview($('applyColor')); });
+$('resetTone').addEventListener('click',()=>{ resetSliders(['brightness','contrast','saturation']); schedulePreview($('applyTone')); });
 
 /* 工具栏 */
 $('toggleCode').addEventListener('click',function(){ showCode=!showCode; this.classList.toggle('on',showCode); draw(); });
