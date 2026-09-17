@@ -948,8 +948,6 @@ $('brand').addEventListener('click',e=>{
 /* MARD 色数 221/291 */
 $('mardMode').addEventListener('change',e=>{
   MARD_MODE=e.target.value;
-  const btn=$('brand').querySelector('[data-v="mard"]');
-  btn.textContent='MARD · '+e.target.value+'色';
   setPalette('mard');
   if(img) generate();
 });
@@ -1138,7 +1136,7 @@ function restoreSettings(){
     $('mardModeRow').style.display = (d.pal==='mard') ? 'block' : 'none';
   }
   // MARD 色数
-  if(d.mardMode==='221'||d.mardMode==='291'){ MARD_MODE=d.mardMode; $('mardMode').value=d.mardMode; const mb=$('brand').querySelector('[data-v="mard"]'); if(mb) mb.textContent='MARD · '+d.mardMode+'色'; }
+  if(d.mardMode==='221'||d.mardMode==='291'){ MARD_MODE=d.mardMode; $('mardMode').value=d.mardMode; }
   setPalette(d.pal && PALETTES[d.pal] ? d.pal : 'mard');
   // 规格
   if(d.bead){ const b=$('beadSize').querySelector(`[data-v="${d.bead}"]`); if(b){ $('beadSize').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); } }
