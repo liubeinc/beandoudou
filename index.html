@@ -56,19 +56,22 @@
   .row-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
   .row-head label{margin-bottom:0}
   .row-head .btn.ghost{margin:0;flex:0 0 auto;padding:6px 12px}
-  .row-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+  .row-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto;position:relative}
   .btn.ghost.reset{color:var(--mut);border-color:transparent;background:transparent;padding:6px 2px;font-weight:500;font-size:12px}
   .btn.ghost.reset:hover{color:var(--pri);border-color:transparent;background:transparent;text-decoration:underline}
   .seg{display:flex;gap:8px;flex-wrap:wrap}
   #brand{display:flex;gap:8px;flex-wrap:nowrap;position:relative}
   #brand button{flex:1;padding:9px 4px}
-  #brand button .caret{font-size:9px;margin-left:5px;opacity:.7;vertical-align:1px}
+  .caret{font-size:9px;margin-left:5px;opacity:.7;vertical-align:1px}
   .submenu{position:absolute;top:calc(100% + 6px);left:0;min-width:236px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 28px rgba(28,40,58,.16);padding:5px;z-index:30;text-align:left}
   #brand .submenu button{flex:none;width:100%;display:flex;align-items:center;gap:10px;padding:9px 12px;border:none;border-radius:7px;background:transparent;font-size:13px;font-weight:600;color:#4a5361;white-space:normal;text-align:left;cursor:pointer;transition:.12s;box-shadow:none;letter-spacing:0}
   #brand .submenu button:hover{background:var(--pri-soft);color:var(--pri)}
   #brand .submenu button.on{color:var(--pri);background:var(--pri-soft)}
   #brand .submenu button .tick{margin-left:auto;color:var(--pri);font-weight:800}
   #brand .submenu button:not(.on) .tick{visibility:hidden}
+  .row-actions .submenu{left:auto;right:0;top:calc(100% + 4px);min-width:132px}
+  .row-actions .submenu button{display:flex;align-items:center;gap:10px;width:100%;padding:8px 12px;border:none;border-radius:7px;background:transparent;font-size:13px;font-weight:600;color:#4a5361;white-space:normal;text-align:left;cursor:pointer;transition:.12s}
+  .row-actions .submenu button:hover{background:var(--pri-soft);color:var(--pri)}
   .seg button{flex:1;min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:#fff;cursor:pointer;font-size:13px;font-weight:600;color:#4a5361;transition:.12s;white-space:nowrap}
   .seg button:hover{border-color:var(--pri-2)}
   .seg button:active{background:#eef0fe}
@@ -229,8 +232,10 @@
         <div class="row-head">
           <label>高度（颗数）<span class="val" id="hVal">60</span></label>
           <div class="row-actions">
-            <button class="btn ghost reset" id="resetSize">恢复默认</button>
-            <button class="btn ghost" id="applySize">应用更改</button>
+            <button class="btn ghost" id="applySize"><span class="lbl">应用更改</span><span class="caret">▾</span></button>
+            <div class="submenu" id="sizeMenu" hidden>
+              <button data-reset="size">恢复默认</button>
+            </div>
           </div>
         </div>
         <input type="range" id="height" min="8" max="200" value="60" step="1">
@@ -245,8 +250,10 @@
         <div class="row-head">
           <label>颜色数量 <span class="val" id="colorVal">不限</span></label>
           <div class="row-actions">
-            <button class="btn ghost reset" id="resetColor">恢复默认</button>
-            <button class="btn ghost" id="applyColor">应用更改</button>
+            <button class="btn ghost" id="applyColor"><span class="lbl">应用更改</span><span class="caret">▾</span></button>
+            <div class="submenu" id="colorMenu" hidden>
+              <button data-reset="color">恢复默认</button>
+            </div>
           </div>
         </div>
         <input type="range" id="colorLimit" min="1" max="48" value="48" step="1">
@@ -282,8 +289,10 @@
         <div class="row-head">
           <label>调色 · 饱和度 <span class="val" id="satVal">0</span></label>
           <div class="row-actions">
-            <button class="btn ghost reset" id="resetTone">恢复默认</button>
-            <button class="btn ghost" id="applyTone">应用更改</button>
+            <button class="btn ghost" id="applyTone"><span class="lbl">应用更改</span><span class="caret">▾</span></button>
+            <div class="submenu" id="toneMenu" hidden>
+              <button data-reset="tone">恢复默认</button>
+            </div>
           </div>
         </div>
         <input type="range" id="saturation" min="-100" max="100" value="0" step="1">
@@ -959,9 +968,12 @@ $('brand').addEventListener('click',e=>{
   else { $('mardMenu').hidden=true; }
   if(img) generate();
 });
-/* 点击品牌区外收起二级下拉 */
+/* 点击相关区域外收起各二级下拉 */
 document.addEventListener('click',e=>{
   if(!e.target.closest('#brand')) $('mardMenu').hidden=true;
+  if(!e.target.closest('#applySize,#sizeMenu')) $('sizeMenu').hidden=true;
+  if(!e.target.closest('#applyColor,#colorMenu')) $('colorMenu').hidden=true;
+  if(!e.target.closest('#applyTone,#toneMenu')) $('toneMenu').hidden=true;
 });
 /* 规格 */
 $('beadSize').addEventListener('click',e=>{
@@ -980,8 +992,9 @@ $('shape').addEventListener('click',e=>{
 /* 滑块联动：拖动时实时预览（画布跟着变），但不「应用」；
    点「应用更改」才把当前预览提交为正式结果（下载用它）。rAF 节流避免拖动卡顿 */
 function setPending(btn, on){
-  if(on){ btn.classList.add('pending'); btn.textContent='应用更改 · 待应用'; }
-  else { btn.classList.remove('pending'); btn.textContent='应用更改'; }
+  const lbl=btn.querySelector('.lbl');
+  if(on){ btn.classList.add('pending'); if(lbl) lbl.textContent='应用更改 · 待应用'; else btn.textContent='应用更改 · 待应用'; }
+  else { btn.classList.remove('pending'); if(lbl) lbl.textContent='应用更改'; else btn.textContent='应用更改'; }
 }
 function markPending(btn){ if(!img) return; setPending(btn,true); }
 function clearPending(){ setPending($('applySize'),false); setPending($('applyColor'),false); setPending($('applyTone'),false); }
@@ -1024,11 +1037,20 @@ $('keepRatio').addEventListener('change',()=>{ if($('keepRatio').checked && img)
 $('removeBg').addEventListener('change',()=>generate());
 $('dither').addEventListener('change',()=>generate());
 $('generate').addEventListener('click',()=>generate());
-$('applySize').addEventListener('click',()=>generate());
-$('applyColor').addEventListener('click',()=>generate());
-$('applyTone').addEventListener('click',()=>generate());
-
-/* 恢复默认：三组滑杆各自复位到默认值（实时预览 + 待应用，点「应用更改」才提交） */
+/* 应用更改 ▾ 合并：点正文=应用；点 ▾=展开「恢复默认」二级下拉 */
+function setupApplySplit(applyId, menuId, resetFn){
+  const applyBtn=$(applyId), menu=$(menuId);
+  applyBtn.addEventListener('click',e=>{
+    if(e.target.closest('.caret')){ menu.hidden=!menu.hidden; return; }
+    menu.hidden=true;
+    generate();
+  });
+  menu.addEventListener('click',e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    menu.hidden=true;
+    resetFn();
+  });
+}
 const DEFAULTS={ width:60, height:60, colorLimit:48, brightness:0, contrast:0, saturation:0 };
 function resetSliders(ids){
   ids.forEach(id=>{ $(id).value=DEFAULTS[id]; });
@@ -1039,9 +1061,9 @@ function resetSliders(ids){
   $('conVal').textContent=$('contrast').value;
   $('satVal').textContent=$('saturation').value;
 }
-$('resetSize').addEventListener('click',()=>{ resetSliders(['width','height']); schedulePreview($('applySize')); });
-$('resetColor').addEventListener('click',()=>{ resetSliders(['colorLimit']); schedulePreview($('applyColor')); });
-$('resetTone').addEventListener('click',()=>{ resetSliders(['brightness','contrast','saturation']); schedulePreview($('applyTone')); });
+setupApplySplit('applySize','sizeMenu',()=>{ resetSliders(['width','height']); schedulePreview($('applySize')); });
+setupApplySplit('applyColor','colorMenu',()=>{ resetSliders(['colorLimit']); schedulePreview($('applyColor')); });
+setupApplySplit('applyTone','toneMenu',()=>{ resetSliders(['brightness','contrast','saturation']); schedulePreview($('applyTone')); });
 
 /* 工具栏 */
 $('toggleCode').addEventListener('click',function(){ showCode=!showCode; this.classList.toggle('on',showCode); draw(); });
