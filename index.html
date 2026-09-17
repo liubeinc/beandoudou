@@ -62,7 +62,7 @@
   .seg{display:flex;gap:8px;flex-wrap:wrap}
   #brand{display:flex;gap:8px;flex-wrap:nowrap;position:relative}
   #brand button{flex:1;padding:9px 4px}
-  .caret{font-size:9px;margin-left:5px;opacity:.7;vertical-align:1px}
+  .caret{font-size:12px;margin-left:6px;opacity:.7;vertical-align:-1px}
   .submenu{position:absolute;top:calc(100% + 6px);left:0;min-width:236px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 28px rgba(28,40,58,.16);padding:5px;z-index:30;text-align:left}
   #brand .submenu button{flex:none;width:100%;display:flex;align-items:center;gap:10px;padding:9px 12px;border:none;border-radius:7px;background:transparent;font-size:13px;font-weight:600;color:#4a5361;white-space:normal;text-align:left;cursor:pointer;transition:.12s;box-shadow:none;letter-spacing:0}
   #brand .submenu button:hover{background:var(--pri-soft);color:var(--pri)}
@@ -317,8 +317,9 @@
         <div class="dims">图纸尺寸 <b id="dimsText">—</b> · 约 <b id="sizeText">—</b> <span class="bead-total" id="beadTotal" style="display:none">共需 <b id="totalBeads">0</b> 颗豆子</span></div>
         <div class="toolbar" id="toolbar" style="display:none">
           <div class="split-group">
-            <button id="toggleCode" class="on"><span class="lbl">色号标注</span><span class="caret">▾</span></button>
+            <button id="displayBtn"><span class="lbl">显示</span><span class="caret">▾</span></button>
             <div class="submenu" id="displayMenu" hidden>
+              <button id="toggleCode" class="on">色号标注<span class="tick">✓</span></button>
               <button id="toggleGrid" class="on">网格线<span class="tick">✓</span></button>
             </div>
           </div>
@@ -992,7 +993,7 @@ document.addEventListener('click',e=>{
   if(!e.target.closest('#applySize,#sizeMenu')) $('sizeMenu').hidden=true;
   if(!e.target.closest('#applyColor,#colorMenu')) $('colorMenu').hidden=true;
   if(!e.target.closest('#applyTone,#toneMenu')) $('toneMenu').hidden=true;
-  if(!e.target.closest('#toggleCode,#displayMenu')) $('displayMenu').hidden=true;
+  if(!e.target.closest('#displayBtn,#displayMenu')) $('displayMenu').hidden=true;
   if(!e.target.closest('#downloadBtn,#downloadMenu')) $('downloadMenu').hidden=true;
 });
 /* 规格 */
@@ -1085,10 +1086,11 @@ setupApplySplit('applySize','sizeMenu',()=>{ resetSliders(['width','height']); s
 setupApplySplit('applyColor','colorMenu',()=>{ resetSliders(['colorLimit']); schedulePreview($('applyColor')); });
 setupApplySplit('applyTone','toneMenu',()=>{ resetSliders(['brightness','contrast','saturation']); schedulePreview($('applyTone')); });
 
-/* 工具栏：显示组（色号标注 ▾ 网格线）+ 导出组（下载 ▾ 打印） */
-$('toggleCode').addEventListener('click',function(e){
-  if(e.target.closest('.caret')){ $('displayMenu').hidden=!$('displayMenu').hidden; return; }
+/* 工具栏：显示组（显示 ▾ 色号标注/网格线）+ 导出组（下载 ▾ 打印） */
+$('displayBtn').addEventListener('click',function(){ $('displayMenu').hidden=!$('displayMenu').hidden; });
+$('toggleCode').addEventListener('click',function(){
   showCode=!showCode; this.classList.toggle('on',showCode); draw();
+  $('displayMenu').hidden=true;
 });
 $('toggleGrid').addEventListener('click',function(){
   showGrid=!showGrid; this.classList.toggle('on',showGrid); draw();
