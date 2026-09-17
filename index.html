@@ -73,6 +73,10 @@
   .row-actions .submenu button{display:flex;align-items:center;gap:10px;width:100%;padding:8px 12px;border:none;border-radius:7px;background:transparent;font-size:13px;font-weight:600;color:#4a5361;white-space:normal;text-align:left;cursor:pointer;transition:.12s}
   .row-actions .submenu button:hover{background:var(--pri-soft);color:var(--pri)}
   .split-group{position:relative;display:inline-flex;align-items:center}
+  .split-btn{position:relative;display:inline-flex;align-items:stretch}
+  .split-btn .btn.ghost{margin:0;border-radius:9px 0 0 9px;border-right:0}
+  .split-btn .btn.ghost.split-caret{border-radius:0 9px 9px 0;border-left:0;padding:6px 14px;min-width:40px}
+  .split-btn .btn.ghost.split-caret .caret{margin-left:0}
   .tsep{width:1px;align-self:stretch;background:var(--line);margin:3px 2px}
   .toolbar .submenu{left:0;top:calc(100% + 6px);min-width:172px}
   .toolbar .submenu button{display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;border:none;border-radius:7px;background:transparent;font-size:13px;font-weight:600;color:#4a5361;white-space:nowrap;text-align:left;cursor:pointer;transition:.12s;box-shadow:none}
@@ -129,6 +133,7 @@
   @media (hover:none),(pointer:coarse){
     .seg button{padding:12px 10px}
     .btn{padding:15px}
+    .split-btn .btn.ghost.split-caret{min-width:48px;padding:6px 16px}
     .check{min-height:44px}
     .check input{width:20px;height:20px}
     .crop-handle{width:22px;height:22px;border-width:2px}
@@ -240,9 +245,12 @@
         <div class="row-head">
           <label>高度（颗数）<span class="val" id="hVal">60</span></label>
           <div class="row-actions">
-            <button class="btn ghost" id="applySize"><span class="lbl">应用更改</span><span class="caret">▾</span></button>
-            <div class="submenu" id="sizeMenu" hidden>
-              <button data-reset="size">恢复默认</button>
+            <div class="split-btn">
+              <button class="btn ghost" id="applySize"><span class="lbl">应用更改</span></button>
+              <button class="btn ghost split-caret" aria-label="恢复默认" title="恢复默认"><span class="caret">▾</span></button>
+              <div class="submenu" id="sizeMenu" hidden>
+                <button data-reset="size">恢复默认</button>
+              </div>
             </div>
           </div>
         </div>
@@ -258,9 +266,12 @@
         <div class="row-head">
           <label>颜色数量 <span class="val" id="colorVal">不限</span></label>
           <div class="row-actions">
-            <button class="btn ghost" id="applyColor"><span class="lbl">应用更改</span><span class="caret">▾</span></button>
-            <div class="submenu" id="colorMenu" hidden>
-              <button data-reset="color">恢复默认</button>
+            <div class="split-btn">
+              <button class="btn ghost" id="applyColor"><span class="lbl">应用更改</span></button>
+              <button class="btn ghost split-caret" aria-label="恢复默认" title="恢复默认"><span class="caret">▾</span></button>
+              <div class="submenu" id="colorMenu" hidden>
+                <button data-reset="color">恢复默认</button>
+              </div>
             </div>
           </div>
         </div>
@@ -297,9 +308,12 @@
         <div class="row-head">
           <label>调色 · 饱和度 <span class="val" id="satVal">0</span></label>
           <div class="row-actions">
-            <button class="btn ghost" id="applyTone"><span class="lbl">应用更改</span><span class="caret">▾</span></button>
-            <div class="submenu" id="toneMenu" hidden>
-              <button data-reset="tone">恢复默认</button>
+            <div class="split-btn">
+              <button class="btn ghost" id="applyTone"><span class="lbl">应用更改</span></button>
+              <button class="btn ghost split-caret" aria-label="恢复默认" title="恢复默认"><span class="caret">▾</span></button>
+              <div class="submenu" id="toneMenu" hidden>
+                <button data-reset="tone">恢复默认</button>
+              </div>
             </div>
           </div>
         </div>
@@ -987,14 +1001,11 @@ $('brand').addEventListener('click',e=>{
   else { $('mardMenu').hidden=true; }
   if(img) generate();
 });
-/* 点击相关区域外收起各二级下拉 */
+/* 点击下拉或触发按钮外，收起所有二级下拉 */
 document.addEventListener('click',e=>{
-  if(!e.target.closest('#brand')) $('mardMenu').hidden=true;
-  if(!e.target.closest('#applySize,#sizeMenu')) $('sizeMenu').hidden=true;
-  if(!e.target.closest('#applyColor,#colorMenu')) $('colorMenu').hidden=true;
-  if(!e.target.closest('#applyTone,#toneMenu')) $('toneMenu').hidden=true;
-  if(!e.target.closest('#displayBtn,#displayMenu')) $('displayMenu').hidden=true;
-  if(!e.target.closest('#downloadBtn,#downloadMenu')) $('downloadMenu').hidden=true;
+  const t=e.target;
+  if(t.closest('.submenu') || t.closest('.split-caret') || t.closest('#brand') || t.closest('#displayBtn') || t.closest('#downloadBtn')) return;
+  document.querySelectorAll('.submenu').forEach(m=>{ m.hidden=true; });
 });
 /* 规格 */
 $('beadSize').addEventListener('click',e=>{
@@ -1061,11 +1072,9 @@ $('generate').addEventListener('click',()=>generate());
 /* 应用更改 ▾ 合并：点正文=应用；点 ▾=展开「恢复默认」二级下拉 */
 function setupApplySplit(applyId, menuId, resetFn){
   const applyBtn=$(applyId), menu=$(menuId);
-  applyBtn.addEventListener('click',e=>{
-    if(e.target.closest('.caret')){ menu.hidden=!menu.hidden; return; }
-    menu.hidden=true;
-    generate();
-  });
+  const caretBtn=applyBtn.parentElement.querySelector('.split-caret');
+  applyBtn.addEventListener('click',()=>{ menu.hidden=true; generate(); });
+  caretBtn.addEventListener('click',()=>{ menu.hidden=!menu.hidden; });
   menu.addEventListener('click',e=>{
     const b=e.target.closest('button'); if(!b) return;
     menu.hidden=true;
