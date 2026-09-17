@@ -72,7 +72,7 @@
   .btn:hover{filter:brightness(1.06);transform:translateY(-1px)}
   .btn:active{transform:translateY(0);filter:brightness(.97)}
   .btn:disabled{background:#c9cede;cursor:not-allowed;box-shadow:none}
-  .btn.ghost{margin-top:10px;display:inline-flex;width:auto;align-items:center;justify-content:center;padding:8px 14px;font-size:13px;font-weight:600;background:#fff;color:var(--pri);border:1px solid var(--line);border-radius:9px;box-shadow:none;letter-spacing:0}
+  .btn.ghost{margin:10px 0 14px;display:inline-flex;width:auto;align-items:center;justify-content:center;padding:8px 14px;font-size:13px;font-weight:600;background:#fff;color:var(--pri);border:1px solid var(--line);border-radius:9px;box-shadow:none;letter-spacing:0}
   .btn.ghost:hover{border-color:var(--pri)}
   .btn.ghost.pending{border-color:var(--pri);background:var(--pri-soft);animation:applyPulse 1.4s ease-in-out infinite}
   @keyframes applyPulse{0%,100%{box-shadow:0 0 0 0 rgba(91,108,240,.35)}50%{box-shadow:0 0 0 6px rgba(91,108,240,0)}}
@@ -230,7 +230,7 @@
         <div class="range-labels"><span>1</span><span>48</span></div>
       </div>
 
-      <button class="btn ghost" id="applySize" style="display:none">应用更改</button>
+      <button class="btn ghost" id="applySize">应用更改</button>
 
       <div class="row">
         <label>画板形状</label>
@@ -262,7 +262,7 @@
         <input type="range" id="saturation" min="-100" max="100" value="0" step="1">
       </div>
 
-      <button class="btn ghost" id="applyTone" style="display:none">应用更改</button>
+      <button class="btn ghost" id="applyTone">应用更改</button>
 
       <button class="btn" id="generate">生成拼豆图纸</button>
     </div>
@@ -642,8 +642,6 @@ function generate(){
   updateDims(w,h);
   $('toolbar').style.display='flex';
   $('placeholder').style.display='none';
-  $('applySize').style.display='inline-flex';
-  $('applyTone').style.display='inline-flex';
   clearPending();
 }
 
