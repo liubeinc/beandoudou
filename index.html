@@ -230,6 +230,8 @@
         <div class="range-labels"><span>1</span><span>48</span></div>
       </div>
 
+      <button class="btn ghost" id="applySize" style="display:none">应用更改</button>
+
       <div class="row">
         <label>画板形状</label>
         <div class="seg" id="shape">
@@ -260,8 +262,9 @@
         <input type="range" id="saturation" min="-100" max="100" value="0" step="1">
       </div>
 
+      <button class="btn ghost" id="applyTone" style="display:none">应用更改</button>
+
       <button class="btn" id="generate">生成拼豆图纸</button>
-      <button class="btn ghost" id="apply" style="display:none">应用更改</button>
     </div>
   </div>
 
@@ -639,7 +642,8 @@ function generate(){
   updateDims(w,h);
   $('toolbar').style.display='flex';
   $('placeholder').style.display='none';
-  $('apply').style.display='block';
+  $('applySize').style.display='inline-flex';
+  $('applyTone').style.display='inline-flex';
   clearPending();
 }
 
@@ -927,18 +931,12 @@ $('shape').addEventListener('click',e=>{
   generate();
 });
 /* 滑块联动（拖拽只改数值，不实时重算；点「应用更改」才重新生成，避免误触） */
-let pending=false;
-function markPending(){
-  if(!img) return;
-  pending=true;
-  $('apply').classList.add('pending');
-  $('apply').textContent='应用更改 · 待应用';
+function setPending(btn, on){
+  if(on){ btn.classList.add('pending'); btn.textContent='应用更改 · 待应用'; }
+  else { btn.classList.remove('pending'); btn.textContent='应用更改'; }
 }
-function clearPending(){
-  pending=false;
-  $('apply').classList.remove('pending');
-  $('apply').textContent='应用更改';
-}
+function markPending(btn){ if(!img) return; setPending(btn,true); }
+function clearPending(){ setPending($('applySize'),false); setPending($('applyTone'),false); }
 function bindRange(id, valId, fmt, onLive){
   $(id).addEventListener('input',()=>{ $(valId).textContent=fmt(+$(id).value); if(onLive) onLive(); });
   if(onLive) $(id).addEventListener('change',onLive);
@@ -956,21 +954,22 @@ function syncRatio(fromW){
 }
 bindRange('width','wVal',v=>v,()=>{
   if($('keepRatio').checked && img) syncRatio(true);
-  markPending();
+  markPending($('applySize'));
 });
 bindRange('height','hVal',v=>v,()=>{
   if($('keepRatio').checked && img) syncRatio(false);
-  markPending();
+  markPending($('applySize'));
 });
-bindRange('colorLimit','colorVal',v=>v>=48?'不限':v,()=>markPending());
-bindRange('brightness','briVal',v=>v,()=>markPending());
-bindRange('contrast','conVal',v=>v,()=>markPending());
-bindRange('saturation','satVal',v=>v,()=>markPending());
+bindRange('colorLimit','colorVal',v=>v>=48?'不限':v,()=>markPending($('applySize')));
+bindRange('brightness','briVal',v=>v,()=>markPending($('applyTone')));
+bindRange('contrast','conVal',v=>v,()=>markPending($('applyTone')));
+bindRange('saturation','satVal',v=>v,()=>markPending($('applyTone')));
 $('keepRatio').addEventListener('change',()=>{ if($('keepRatio').checked && img) syncRatio(true); });
 $('removeBg').addEventListener('change',()=>generate());
 $('dither').addEventListener('change',()=>generate());
 $('generate').addEventListener('click',()=>generate());
-$('apply').addEventListener('click',()=>generate());
+$('applySize').addEventListener('click',()=>generate());
+$('applyTone').addEventListener('click',()=>generate());
 
 /* 工具栏 */
 $('toggleCode').addEventListener('click',function(){ showCode=!showCode; this.classList.toggle('on',showCode); draw(); });
