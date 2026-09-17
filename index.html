@@ -72,6 +72,10 @@
   .btn:hover{filter:brightness(1.06);transform:translateY(-1px)}
   .btn:active{transform:translateY(0);filter:brightness(.97)}
   .btn:disabled{background:#c9cede;cursor:not-allowed;box-shadow:none}
+  .btn.ghost{margin-top:10px;background:#fff;color:var(--pri);border:1.5px solid var(--line);box-shadow:none;letter-spacing:0}
+  .btn.ghost:hover{border-color:var(--pri)}
+  .btn.ghost.pending{border-color:var(--pri);background:var(--pri-soft);animation:applyPulse 1.4s ease-in-out infinite}
+  @keyframes applyPulse{0%,100%{box-shadow:0 0 0 0 rgba(91,108,240,.35)}50%{box-shadow:0 0 0 6px rgba(91,108,240,0)}}
   /* 右侧预览 */
   .right{min-width:0}
   .preview-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
@@ -257,6 +261,7 @@
       </div>
 
       <button class="btn" id="generate">生成拼豆图纸</button>
+      <button class="btn ghost" id="apply" style="display:none">应用更改</button>
     </div>
   </div>
 
@@ -634,6 +639,8 @@ function generate(){
   updateDims(w,h);
   $('toolbar').style.display='flex';
   $('placeholder').style.display='none';
+  $('apply').style.display='block';
+  clearPending();
 }
 
 /* ============ 绘制 ============ */
@@ -919,13 +926,18 @@ $('shape').addEventListener('click',e=>{
   b.classList.add('on');
   generate();
 });
-/* 滑块联动 */
-/* 实时生成节流：rAF 合并一帧内的多次触发，避免拖动时高频重算卡顿 */
-let genPending=false;
-function scheduleGenerate(){
-  if(genPending) return;
-  genPending=true;
-  requestAnimationFrame(()=>{ genPending=false; generate(); });
+/* 滑块联动（拖拽只改数值，不实时重算；点「应用更改」才重新生成，避免误触） */
+let pending=false;
+function markPending(){
+  if(!img) return;
+  pending=true;
+  $('apply').classList.add('pending');
+  $('apply').textContent='应用更改 · 待应用';
+}
+function clearPending(){
+  pending=false;
+  $('apply').classList.remove('pending');
+  $('apply').textContent='应用更改';
 }
 function bindRange(id, valId, fmt, onLive){
   $(id).addEventListener('input',()=>{ $(valId).textContent=fmt(+$(id).value); if(onLive) onLive(); });
@@ -944,20 +956,21 @@ function syncRatio(fromW){
 }
 bindRange('width','wVal',v=>v,()=>{
   if($('keepRatio').checked && img) syncRatio(true);
-  scheduleGenerate();
+  markPending();
 });
 bindRange('height','hVal',v=>v,()=>{
   if($('keepRatio').checked && img) syncRatio(false);
-  scheduleGenerate();
+  markPending();
 });
-bindRange('colorLimit','colorVal',v=>v>=48?'不限':v,()=>scheduleGenerate());
-bindRange('brightness','briVal',v=>v,()=>scheduleGenerate());
-bindRange('contrast','conVal',v=>v,()=>scheduleGenerate());
-bindRange('saturation','satVal',v=>v,()=>scheduleGenerate());
+bindRange('colorLimit','colorVal',v=>v>=48?'不限':v,()=>markPending());
+bindRange('brightness','briVal',v=>v,()=>markPending());
+bindRange('contrast','conVal',v=>v,()=>markPending());
+bindRange('saturation','satVal',v=>v,()=>markPending());
 $('keepRatio').addEventListener('change',()=>{ if($('keepRatio').checked && img) syncRatio(true); });
 $('removeBg').addEventListener('change',()=>generate());
 $('dither').addEventListener('change',()=>generate());
 $('generate').addEventListener('click',()=>generate());
+$('apply').addEventListener('click',()=>generate());
 
 /* 工具栏 */
 $('toggleCode').addEventListener('click',function(){ showCode=!showCode; this.classList.toggle('on',showCode); draw(); });
