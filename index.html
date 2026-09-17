@@ -178,7 +178,7 @@
       </div>
 
       <div class="row">
-        <label class="check"><input type="checkbox" id="keepRatio" checked> 保持原图比例（改宽度自动调高度）</label>
+        <label class="check"><input type="checkbox" id="keepRatio" checked> 保持原图比例（宽高联动）</label>
       </div>
 
       <div class="row">
@@ -883,16 +883,30 @@ function bindRange(id, valId, fmt, cb){
   $(id).addEventListener('input',()=>{ $(valId).textContent=fmt(+$(id).value); });
   if(cb) $(id).addEventListener('change',cb);
 }
+/* 按原图比例双向联动：fromW=true 改宽同步高, false 改高同步宽 */
+function syncRatio(fromW){
+  const r = effRatio();
+  if(fromW){
+    $('height').value=Math.max(8,Math.min(200,Math.round((+$('width').value)*r)));
+    $('hVal').textContent=$('height').value;
+  } else {
+    $('width').value=Math.max(8,Math.min(200,Math.round((+$('height').value)/r)));
+    $('wVal').textContent=$('width').value;
+  }
+}
 bindRange('width','wVal',v=>v,()=>{
-  if($('keepRatio').checked && img){ $('height').value=Math.max(8,Math.min(200,Math.round((+$('width').value)*effRatio()))); $('hVal').textContent=$('height').value; }
+  if($('keepRatio').checked && img) syncRatio(true);
   generate();
 });
-bindRange('height','hVal',v=>v,()=>generate());
+bindRange('height','hVal',v=>v,()=>{
+  if($('keepRatio').checked && img) syncRatio(false);
+  generate();
+});
 bindRange('colorLimit','colorVal',v=>v>=48?'不限':v,()=>generate());
 bindRange('brightness','briVal',v=>v,()=>generate());
 bindRange('contrast','conVal',v=>v,()=>generate());
 bindRange('saturation','satVal',v=>v,()=>generate());
-$('keepRatio').addEventListener('change',()=>{ if($('keepRatio').checked && img){ $('height').value=Math.max(8,Math.min(200,Math.round((+$('width').value)*effRatio()))); $('hVal').textContent=$('height').value; } });
+$('keepRatio').addEventListener('change',()=>{ if($('keepRatio').checked && img) syncRatio(true); });
 $('removeBg').addEventListener('change',()=>generate());
 $('dither').addEventListener('change',()=>generate());
 $('generate').addEventListener('click',()=>generate());
