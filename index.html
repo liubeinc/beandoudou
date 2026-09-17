@@ -514,6 +514,7 @@ function codeFont(cell, code){
 
 /* ============ 状态 ============ */
 let img=null, imgW=0, imgH=0, grid=null, gridW=0, gridH=0;
+let appliedGrid=null, appliedW=0, appliedH=0; // 已「应用」的正式网格（下载用它；滑杆预览不覆盖它）
 let showCode=true, showGrid=true;
 let crop=null; // 裁切区域 {x,y,w,h} 相对原图 0~1 比例, null=全图
 
@@ -582,7 +583,7 @@ function adjust(r,g,b,bri,con,sat){
   return [Math.max(0,Math.min(255,r)),Math.max(0,Math.min(255,g)),Math.max(0,Math.min(255,b))];
 }
 
-function generate(){
+function generate(commit){
   if(!img) return;
   const w=+$('width').value, h=+$('height').value;
   const keep=$('keepRatio').checked;
@@ -650,7 +651,16 @@ function generate(){
   updateDims(w,h);
   $('toolbar').style.display='flex';
   $('placeholder').style.display='none';
-  clearPending();
+  if(commit!==false){ commitGrid(); clearPending(); }
+}
+
+// 把当前网格快照为「已应用」正式结果（下载/导出用它）
+function commitGrid(){ appliedGrid=grid; appliedW=gridW; appliedH=gridH; }
+// 在已应用网格上执行导出：临时切换 grid 到 appliedGrid，结束后还原
+function useApplied(fn){
+  const _g=grid, _w=gridW, _h=gridH;
+  grid=(appliedGrid||grid); gridW=(appliedW||gridW); gridH=(appliedH||gridH);
+  try { fn(); } finally { grid=_g; gridW=_w; gridH=_h; }
 }
 
 /* ============ 绘制 ============ */
@@ -768,6 +778,7 @@ function statsEntries(){
 
 /* 完整导出：标题 + 拼豆格图 + 色号对照统计清单 合成一张 */
 function exportPng(){
+  useApplied(()=>{
   const w=gridW,h=gridH; if(!w) return;
   const size=+($('beadSize').querySelector('.on').dataset.v);
   const cell=30, pad=26;
@@ -828,19 +839,23 @@ function exportPng(){
   a.download=`拼豆色号图_${w}x${h}.png`;
   a.href=c.toDataURL('image/png');
   a.click();
+  });
 }
 
 /* 纯色块图纸导出（仅格图，无标注无清单） */
 function exportPngPlain(){
+  useApplied(()=>{
   const w=gridW,h=gridH; if(!w) return;
   const board=renderBoard(30,8,false);
   const a=document.createElement('a');
   a.download=`拼豆色号图_${w}x${h}_纯色块.png`;
   a.href=board.toDataURL('image/png');
   a.click();
+  });
 }
 
 function exportCsv(){
+  useApplied(()=>{
   const w=gridW,h=gridH; if(!w) return;
   let lines=[];
   for(let y=0;y<h;y++){
@@ -855,10 +870,12 @@ function exportCsv(){
   a.href=URL.createObjectURL(blob);
   a.click();
   URL.revokeObjectURL(a.href);
+  });
 }
 
 /* 购物清单：色号 + 颗数 + 颜色hex，按色号自然排序，末尾合计 */
 function exportShopList(){
+  useApplied(()=>{
   const w=gridW,h=gridH; if(!w) return;
   const freq=new Map();
   for(const g of grid) if(g>=0) freq.set(g,(freq.get(g)||0)+1);
@@ -874,6 +891,7 @@ function exportShopList(){
   a.href=URL.createObjectURL(blob);
   a.click();
   URL.revokeObjectURL(a.href);
+  });
 }
 
 /* ============ 事件 ============ */
@@ -936,13 +954,22 @@ $('shape').addEventListener('click',e=>{
   b.classList.add('on');
   generate();
 });
-/* 滑块联动（拖拽只改数值，不实时重算；点「应用更改」才重新生成，避免误触） */
+/* 滑块联动：拖动时实时预览（画布跟着变），但不「应用」；
+   点「应用更改」才把当前预览提交为正式结果（下载用它）。rAF 节流避免拖动卡顿 */
 function setPending(btn, on){
   if(on){ btn.classList.add('pending'); btn.textContent='应用更改 · 待应用'; }
   else { btn.classList.remove('pending'); btn.textContent='应用更改'; }
 }
 function markPending(btn){ if(!img) return; setPending(btn,true); }
 function clearPending(){ setPending($('applySize'),false); setPending($('applyColor'),false); setPending($('applyTone'),false); }
+let previewPending=false;
+function schedulePreview(btn){
+  if(!img) return;
+  markPending(btn);
+  if(previewPending) return;
+  previewPending=true;
+  requestAnimationFrame(()=>{ previewPending=false; generate(false); });
+}
 function bindRange(id, valId, fmt, onLive){
   $(id).addEventListener('input',()=>{ $(valId).textContent=fmt(+$(id).value); if(onLive) onLive(); });
   if(onLive) $(id).addEventListener('change',onLive);
@@ -960,16 +987,16 @@ function syncRatio(fromW){
 }
 bindRange('width','wVal',v=>v,()=>{
   if($('keepRatio').checked && img) syncRatio(true);
-  markPending($('applySize'));
+  schedulePreview($('applySize'));
 });
 bindRange('height','hVal',v=>v,()=>{
   if($('keepRatio').checked && img) syncRatio(false);
-  markPending($('applySize'));
+  schedulePreview($('applySize'));
 });
-bindRange('colorLimit','colorVal',v=>v>=48?'不限':v,()=>markPending($('applyColor')));
-bindRange('brightness','briVal',v=>v,()=>markPending($('applyTone')));
-bindRange('contrast','conVal',v=>v,()=>markPending($('applyTone')));
-bindRange('saturation','satVal',v=>v,()=>markPending($('applyTone')));
+bindRange('colorLimit','colorVal',v=>v>=48?'不限':v,()=>schedulePreview($('applyColor')));
+bindRange('brightness','briVal',v=>v,()=>schedulePreview($('applyTone')));
+bindRange('contrast','conVal',v=>v,()=>schedulePreview($('applyTone')));
+bindRange('saturation','satVal',v=>v,()=>schedulePreview($('applyTone')));
 $('keepRatio').addEventListener('change',()=>{ if($('keepRatio').checked && img) syncRatio(true); });
 $('removeBg').addEventListener('change',()=>generate());
 $('dither').addEventListener('change',()=>generate());
