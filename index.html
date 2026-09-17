@@ -53,6 +53,9 @@
   .row{margin-bottom:14px}
   .row label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
   .row label .val{color:var(--pri);font-weight:800}
+  .row-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+  .row-head label{margin-bottom:0}
+  .row-head .btn.ghost{margin:0;flex:0 0 auto;padding:6px 12px}
   .seg{display:flex;gap:8px;flex-wrap:wrap}
   #brand{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   .seg button{flex:1;min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:#fff;cursor:pointer;font-size:13px;font-weight:600;color:#4a5361;transition:.12s;white-space:nowrap}
@@ -215,7 +218,10 @@
       </div>
 
       <div class="row">
-        <label>高度（颗数）<span class="val" id="hVal">60</span></label>
+        <div class="row-head">
+          <label>高度（颗数）<span class="val" id="hVal">60</span></label>
+          <button class="btn ghost" id="applySize">应用更改</button>
+        </div>
         <input type="range" id="height" min="8" max="200" value="60" step="1">
         <div class="range-labels"><span>8</span><span>200</span></div>
       </div>
@@ -225,12 +231,13 @@
       </div>
 
       <div class="row">
-        <label>颜色数量 <span class="val" id="colorVal">不限</span></label>
+        <div class="row-head">
+          <label>颜色数量 <span class="val" id="colorVal">不限</span></label>
+          <button class="btn ghost" id="applyTone">应用更改</button>
+        </div>
         <input type="range" id="colorLimit" min="1" max="48" value="48" step="1">
         <div class="range-labels"><span>1</span><span>48</span></div>
       </div>
-
-      <button class="btn ghost" id="applySize">应用更改</button>
 
       <div class="row">
         <label>画板形状</label>
@@ -261,8 +268,6 @@
         <label>调色 · 饱和度 <span class="val" id="satVal">0</span></label>
         <input type="range" id="saturation" min="-100" max="100" value="0" step="1">
       </div>
-
-      <button class="btn ghost" id="applyTone">应用更改</button>
 
       <button class="btn" id="generate">生成拼豆图纸</button>
     </div>
@@ -958,7 +963,7 @@ bindRange('height','hVal',v=>v,()=>{
   if($('keepRatio').checked && img) syncRatio(false);
   markPending($('applySize'));
 });
-bindRange('colorLimit','colorVal',v=>v>=48?'不限':v,()=>markPending($('applySize')));
+bindRange('colorLimit','colorVal',v=>v>=48?'不限':v,()=>markPending($('applyTone')));
 bindRange('brightness','briVal',v=>v,()=>markPending($('applyTone')));
 bindRange('contrast','conVal',v=>v,()=>markPending($('applyTone')));
 bindRange('saturation','satVal',v=>v,()=>markPending($('applyTone')));
