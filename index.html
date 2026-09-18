@@ -88,7 +88,8 @@
   .seg button:hover{border-color:var(--pri-2)}
   .seg button:active{background:#eef0fe}
   .seg button.on{border-color:var(--pri);background:var(--pri-soft);color:var(--pri);box-shadow:0 0 0 3px rgba(91,108,240,.12)}
-  input[type=range]{width:100%;height:26px;-webkit-appearance:none;appearance:none;background:transparent;cursor:pointer}
+  input[type=range]{width:100%;height:26px;-webkit-appearance:none;appearance:none;background:transparent;cursor:pointer;touch-action:none}
+  html,body{overscroll-behavior-x:none}
   input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px;background:linear-gradient(90deg,#d7dcee,#e3e6f2)}
   input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;margin-top:-5px;border-radius:50%;background:#fff;border:2px solid var(--pri);box-shadow:0 1px 4px rgba(28,40,58,.2);transition:.12s}
   input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.1)}
