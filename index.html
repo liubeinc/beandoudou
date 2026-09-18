@@ -702,18 +702,23 @@ function generate(commit){
     }
   }
 
-  // 去背景：优先用「手动拾取」的背景色；未拾取时退回四角平均色
+  // 去背景：优先用「手动拾取」的背景色；未拾取时退回四角平均色。
+  // 对比「原始像素」而非匹配后的色号色，更贴合拾取到的背景；阈值放宽以覆盖近白等 JPEG 噪声
   if(removeBg){
     let sr,sg,sb;
     if(bgColor){ sr=bgColor.r; sg=bgColor.g; sb=bgColor.b; }
     else {
       const corners=[[0,0],[w-1,0],[0,h-1],[w-1,h-1]];
       sr=0; sg=0; sb=0; let n=0;
-      corners.forEach(([cx,cy])=>{ const ci=cy*w+cx; if(grid[ci]>=0){ const c=RGB[grid[ci]]; sr+=c.r;sg+=c.g;sb+=c.b;n++; } });
+      corners.forEach(([cx,cy])=>{ const p=(cy*w+cx)*4; if(data[p+3]>=40){ sr+=data[p]; sg+=data[p+1]; sb+=data[p+2]; n++; } });
       if(n===0){ sr=null; } else { sr/=n; sg/=n; sb/=n; }
     }
     if(sr!=null){
-      for(let i=0;i<w*h;i++){ if(grid[i]<0) continue; const c=RGB[grid[i]]; if(dist(c.r,c.g,c.b,sr,sg,sb)<26) grid[i]=-1; }
+      for(let i=0;i<w*h;i++){
+        if(grid[i]<0) continue;
+        const p=i*4;
+        if(dist(data[p],data[p+1],data[p+2],sr,sg,sb)<48) grid[i]=-1;
+      }
     }
   }
 
@@ -1085,7 +1090,11 @@ bindRange('brightness','briVal',v=>v,()=>schedulePreview($('applyTone')));
 bindRange('contrast','conVal',v=>v,()=>schedulePreview($('applyTone')));
 bindRange('saturation','satVal',v=>v,()=>schedulePreview($('applyTone')));
 $('keepRatio').addEventListener('change',()=>{ if($('keepRatio').checked && img) syncRatio(true); });
-$('removeBg').addEventListener('change',()=>{ $('bgPick').style.display = $('removeBg').checked ? 'flex' : 'none'; generate(); });
+$('removeBg').addEventListener('change',()=>{
+  $('bgPick').style.display = $('removeBg').checked ? 'flex' : 'none';
+  if($('removeBg').checked && !bgColor) $('bgHint').textContent='未拾取（自动四角检测）';
+  generate();
+});
 
 /* 手动拾取背景色：点「拾取背景色」→ 在缩略图上点一下背景处 */
 let pickingBg=false;
@@ -1109,9 +1118,10 @@ thumbImg.addEventListener('click',e=>{
   const px=Math.max(0,Math.min(imgW-1,Math.floor((e.clientX-rect.left)/rect.width*imgW)));
   const py=Math.max(0,Math.min(imgH-1,Math.floor((e.clientY-rect.top)/rect.height*imgH)));
   bgColor=readPixel(px,py);
-  $('bgSwatch').style.background=`rgb(${bgColor.r},${bgColor.g},${bgColor.b})`;
+  const hex='#'+[bgColor.r,bgColor.g,bgColor.b].map(v=>v.toString(16).padStart(2,'0')).join('').toUpperCase();
+  $('bgSwatch').style.background=hex;
   $('bgSwatch').style.display='inline-block';
-  $('bgHint').textContent='已选背景色';
+  $('bgHint').textContent='已选 '+hex;
   pickingBg=false;
   $('bgPickBtn').classList.remove('active');
   $('bgPickBtn').textContent='拾取背景色';
