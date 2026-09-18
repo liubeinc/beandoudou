@@ -109,6 +109,16 @@
   .bg-undo{padding:3px 9px;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer;font-size:11px;font-weight:600;color:var(--mut);transition:.12s}
   .bg-undo:hover{border-color:var(--pri);color:var(--pri)}
   .bg-hint{font-size:12px;color:var(--mut)}
+  /* 拾取背景色：左侧内嵌预览面板（不遮挡右侧图纸） */
+  .pick-panel{border:1px solid var(--pri);border-radius:12px;background:#fff;margin-top:10px;overflow:hidden;box-shadow:0 4px 14px rgba(91,108,240,.14)}
+  .pick-panel-head{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:var(--pri-soft)}
+  .pick-panel-title{font-size:12px;font-weight:800;color:var(--pri)}
+  .pick-panel-close{border:none;background:transparent;font-size:16px;line-height:1;color:var(--mut);cursor:pointer;padding:2px 6px;border-radius:6px}
+  .pick-panel-close:hover{background:#fff;color:var(--text)}
+  .pick-panel-imgwrap{position:relative;line-height:0;background:repeating-conic-gradient(#f3f4f7 0 25%,#e9ebf1 0 50%) 0 0/20px 20px;display:flex;justify-content:center}
+  .pick-panel-imgwrap img{display:block;max-width:100%;max-height:280px;cursor:crosshair;user-select:none}
+  .pick-panel-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 12px;border-top:1px solid var(--line)}
+  .pick-panel-foot .mf-primary{padding:6px 14px;font-size:12px}
   #thumbImg.picking{cursor:crosshair;outline:2px solid var(--pri);outline-offset:-2px}
   .btn{display:block;width:100%;padding:13px;border:none;border-radius:11px;background:linear-gradient(120deg,#5b6cf0,#7c5bf0);color:#fff;font-size:15px;font-weight:800;cursor:pointer;transition:.15s;letter-spacing:1px;box-shadow:0 4px 14px rgba(91,108,240,.28)}
   .btn:hover{filter:brightness(1.06);transform:translateY(-1px)}
@@ -368,6 +378,24 @@
         </div>
       </div>
 
+      <div class="pick-panel" id="pickPanel" style="display:none">
+        <div class="pick-panel-head">
+          <span class="pick-panel-title">拾取背景色 · 点击图中背景处</span>
+          <button class="pick-panel-close" id="pickPanelClose" type="button" aria-label="关闭">✕</button>
+        </div>
+        <div class="pick-panel-imgwrap">
+          <img id="pickImg" alt="原图预览">
+        </div>
+        <div class="pick-panel-foot">
+          <span class="bg-swatches" id="pickSwatches"></span>
+          <span class="bg-hint" id="pickHint"></span>
+          <span style="flex:1"></span>
+          <button class="bg-undo" id="pickUndo" type="button">撤销</button>
+          <button class="bg-clear" id="pickClear" type="button">清除</button>
+          <button class="mf-primary" id="pickDone" type="button">完成</button>
+        </div>
+      </div>
+
       <div class="row">
         <label class="check"><input type="checkbox" id="dither" checked> 抖动优化（照片渐变更细腻）</label>
       </div>
@@ -478,17 +506,6 @@
         <div class="mf-crop" id="mfCrop">
           <button class="mf-ghost" id="mCropCancel" type="button">取消</button>
           <button class="mf-primary" id="mCropApply" type="button">应用裁切</button>
-        </div>
-        <div class="mf-pick" id="mfPick" style="display:none">
-          <div class="mf-pick-top">
-            <span class="bg-swatches" id="mSwatches"></span>
-            <span class="bg-hint" id="mHint"></span>
-          </div>
-          <div class="mf-pick-btns">
-            <button class="bg-undo" id="mUndo" type="button">撤销</button>
-            <button class="bg-clear" id="mClear" type="button">清除</button>
-            <button class="mf-primary" id="mDone" type="button">完成</button>
-          </div>
         </div>
       </div>
     </div>
@@ -1250,14 +1267,16 @@ function fillSwatches(boxEl){
 }
 function renderBgSwatches(){
   fillSwatches($('bgSwatches'));
-  if($('mSwatches')) fillSwatches($('mSwatches'));
+  fillSwatches($('pickSwatches'));
   const n=bgColors.length;
   $('bgClear').style.display = n ? 'inline-block' : 'none';
   $('bgUndo').style.display = n ? 'inline-block' : 'none';
+  $('pickClear').style.display = n ? 'inline-block' : 'none';
+  $('pickUndo').style.display = n ? 'inline-block' : 'none';
   $('bgHint').textContent = n ? `已选 ${n} 个背景色` : '未拾取（自动四角检测）';
-  if($('mHint')) $('mHint').textContent = n ? `已选 ${n} 个背景色` : '点击图中背景处，可连续多次';
+  $('pickHint').textContent = n ? `已选 ${n} 个背景色` : '点击图中背景处，可连续多次';
 }
-$('bgPickBtn').addEventListener('click',()=>{ if(!img) return; openModal('pick'); });
+$('bgPickBtn').addEventListener('click',()=>{ if(!img) return; openPickPanel(); });
 $('bgClear').addEventListener('click',()=>{
   bgColors=[];
   renderBgSwatches();
@@ -1268,6 +1287,35 @@ $('bgUndo').addEventListener('click',()=>{
   renderBgSwatches();
   generate();
 });
+/* ============ 拾取背景色：左侧内嵌预览面板（不遮挡右侧图纸） ============ */
+const pickPanel=$('pickPanel'), pickImg=$('pickImg');
+const pickUndo=$('pickUndo'), pickClear=$('pickClear'), pickDone=$('pickDone');
+function openPickPanel(){
+  pickImg.src=thumbImg.src;
+  pickPanel.style.display='block';
+  $('bgPickBtn').classList.add('active');
+  renderBgSwatches();
+  pickPanel.scrollIntoView({block:'nearest',behavior:'smooth'});
+}
+function closePickPanel(commit){
+  pickPanel.style.display='none';
+  $('bgPickBtn').classList.remove('active');
+  if(commit) generate();
+}
+function pickFromImg(ev){
+  if(!img) return;
+  const rect=pickImg.getBoundingClientRect();
+  const px=Math.max(0,Math.min(imgW-1,Math.floor((ev.clientX-rect.left)/rect.width*imgW)));
+  const py=Math.max(0,Math.min(imgH-1,Math.floor((ev.clientY-rect.top)/rect.height*imgH)));
+  bgColors.push(readPixel(px,py));
+  renderBgSwatches();
+  generate(false); // 实时刷新右侧图纸（不提交、不重置缩放）
+}
+$('pickPanelClose').addEventListener('click',()=>closePickPanel(true));
+pickImg.addEventListener('click',pickFromImg);
+pickUndo.addEventListener('click',()=>{ bgColors.pop(); renderBgSwatches(); generate(false); });
+pickClear.addEventListener('click',()=>{ bgColors=[]; renderBgSwatches(); generate(false); });
+pickDone.addEventListener('click',()=>{ $('removeBg').checked=true; $('bgPick').style.display='flex'; renderBgSwatches(); closePickPanel(true); });
 $('dither').addEventListener('change',()=>generate());
 $('generate').addEventListener('click',()=>{ generate(); scrollToResult(); });
 /* 应用更改 ▾ 合并：点正文=应用；点 ▾=展开「恢复默认」二级下拉 */
@@ -1322,35 +1370,24 @@ $('printBtn').addEventListener('click',()=>window.print());
 const cropToggle=$('cropToggle');
 const modal=$('modal'), modalTitle=$('modalTitle'), modalBody=$('modalBody'), modalImg=$('modalImg');
 const mWrap=$('mWrap'), mCropBox=$('mCropBox');
-const mfCrop=$('mfCrop'), mfPick=$('mfPick');
+const mfCrop=$('mfCrop');
 const mCropApply=$('mCropApply'), mCropCancel=$('mCropCancel');
-const mUndo=$('mUndo'), mClear=$('mClear'), mDone=$('mDone');
-let modalMode=null;
 
-function openModal(mode){
+function openModal(){
   if(!img) return;
-  modalMode=mode;
-  if(mode==='crop'){
-    modalTitle.textContent='裁切图片';
-    mfCrop.style.display='flex'; mfPick.style.display='none';
-    mCropBox.style.display='block'; modalBody.classList.remove('picking');
-    const layoutBox=()=>{
-      const r = crop || {x:0.1,y:0.1,w:0.8,h:0.8};
-      setMBox(r.x*mWrap.clientWidth, r.y*mWrap.clientHeight, r.w*mWrap.clientWidth, r.h*mWrap.clientHeight);
-    };
-    modalImg.onload=layoutBox;
-    modalImg.src=thumbImg.src;
-    if(modalImg.complete) layoutBox();
-  } else {
-    modalTitle.textContent='拾取背景色';
-    mfCrop.style.display='none'; mfPick.style.display='flex';
-    mCropBox.style.display='none'; modalBody.classList.add('picking');
-    modalImg.src=thumbImg.src;
-    renderBgSwatches();
-  }
+  modalTitle.textContent='裁切图片';
+  mfCrop.style.display='flex';
+  mCropBox.style.display='block'; modalBody.classList.remove('picking');
+  const layoutBox=()=>{
+    const r = crop || {x:0.1,y:0.1,w:0.8,h:0.8};
+    setMBox(r.x*mWrap.clientWidth, r.y*mWrap.clientHeight, r.w*mWrap.clientWidth, r.h*mWrap.clientHeight);
+  };
+  modalImg.onload=layoutBox;
+  modalImg.src=thumbImg.src;
+  if(modalImg.complete) layoutBox();
   modal.style.display='flex';
 }
-function closeModal(){ modal.style.display='none'; modalBody.classList.remove('picking'); modalMode=null; }
+function closeModal(){ modal.style.display='none'; modalBody.classList.remove('picking'); }
 $('modalClose').addEventListener('click',closeModal);
 modal.addEventListener('click',e=>{ if(e.target===modal) closeModal(); });
 
@@ -1358,7 +1395,7 @@ function setMBox(left,top,w,h){
   mCropBox.style.left=left+'px'; mCropBox.style.top=top+'px';
   mCropBox.style.width=w+'px'; mCropBox.style.height=h+'px';
 }
-cropToggle.addEventListener('click',()=>openModal('crop'));
+cropToggle.addEventListener('click',()=>openModal());
 
 /* 裁切框拖拽/缩放（弹窗内） */
 let mDrag=null;
@@ -1399,19 +1436,6 @@ mCropApply.addEventListener('click',()=>{
   closeModal(); generate();
 });
 mCropCancel.addEventListener('click',closeModal);
-
-/* 拾取背景色（弹窗内点击） */
-modalImg.addEventListener('click',e=>{
-  if(modalMode!=='pick' || !img) return;
-  const rect=modalImg.getBoundingClientRect();
-  const px=Math.max(0,Math.min(imgW-1,Math.floor((e.clientX-rect.left)/rect.width*imgW)));
-  const py=Math.max(0,Math.min(imgH-1,Math.floor((e.clientY-rect.top)/rect.height*imgH)));
-  bgColors.push(readPixel(px,py));
-  renderBgSwatches();
-});
-mUndo.addEventListener('click',()=>{ bgColors.pop(); renderBgSwatches(); });
-mClear.addEventListener('click',()=>{ bgColors=[]; renderBgSwatches(); });
-mDone.addEventListener('click',()=>{ $('removeBg').checked=true; $('bgPick').style.display='flex'; renderBgSwatches(); closeModal(); generate(); });
 
 /* ============ 记忆上次设置 (localStorage) ============ */
 const LS_KEY='beandou_settings_v1';
