@@ -349,17 +349,6 @@
       </div>
 
       <div class="row">
-        <label>一键限色</label>
-        <div class="seg" id="limitPresets">
-          <button data-n="2">2 色</button>
-          <button data-n="4">4 色</button>
-          <button data-n="8">8 色</button>
-          <button data-n="16">16 色</button>
-          <button data-n="0" class="on">不限</button>
-        </div>
-      </div>
-
-      <div class="row">
         <label>画板形状</label>
         <div class="seg" id="shape">
           <button data-v="rect" class="on">矩形</button>
@@ -1582,7 +1571,7 @@ function initStageZoom(){
 $('genBarBtn').addEventListener('click',()=>{ generate(); scrollToResult(); });
 initStageZoom();
 
-/* ============ 平面图自动识别 + 限色预设 + 颜色数提示 ============ */
+/* ============ 平面图自动识别 + 颜色数提示 ============ */
 function detectFlat(){
   if(!img) return false;
   const s=64, c=document.createElement('canvas'); c.width=s; c.height=s;
@@ -1599,20 +1588,6 @@ function detectFlat(){
   const coverage=(top[0]+(top[1]||0))/total;
   return cnt.size<=24 || coverage>0.7;
 }
-function syncLimitPreset(){
-  const v=+$('colorLimit').value, n = v>=48 ? 0 : v;
-  $('limitPresets').querySelectorAll('button').forEach(b=>b.classList.toggle('on', +b.dataset.n===n));
-}
-$('limitPresets').addEventListener('click',e=>{
-  const b=e.target.closest('button'); if(!b) return;
-  const n=+b.dataset.n;
-  $('colorLimit').value = n>0 ? n : 48;
-  $('colorVal').textContent = n>0 ? String(n) : '不限';
-  syncLimitPreset();
-  generate();
-});
-$('colorLimit').addEventListener('input',syncLimitPreset);
-$('colorLimit').addEventListener('change',syncLimitPreset);
 function updateColorHint(count){
   const el=$('colorHint'); if(!el) return;
   if(count>30){
@@ -1625,9 +1600,8 @@ $('colorHint').addEventListener('click',e=>{
   if(b.id==='colorHintClose'){ $('colorHint').style.display='none'; return; }
   const act=b.dataset.act;
   if(act==='removebg'){ $('removeBg').checked=true; $('bgPick').style.display='flex'; renderBgSwatches(); generate(); }
-  else if(act==='limit8'){ $('colorLimit').value=8; $('colorVal').textContent='8'; syncLimitPreset(); generate(); }
+  else if(act==='limit8'){ $('colorLimit').value=8; $('colorVal').textContent='8'; generate(); }
 });
-syncLimitPreset();
 
 // 任意设置变化都保存（change 捕获 checkbox/select/range 松手; click 捕获按钮切换; input 捕获 range 拖动）
 ['change','click','input'].forEach(ev=>{
