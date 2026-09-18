@@ -150,8 +150,11 @@
   .color-hint .ch-btn{padding:6px 12px;border:1px solid #e6c98a;border-radius:8px;background:#fff;color:#8a6d1a;font-size:12px;font-weight:700;cursor:pointer}
   .color-hint .ch-btn:hover{border-color:#d4a53a}
   .color-hint .ch-close{border:none;background:transparent;color:#cbb67f;font-size:16px;padding:0 4px;cursor:pointer}
-  /* 右侧预览 */
+  /* 右侧预览：桌面双栏时吸顶固定，调左侧参数时图纸不滚出视野 */
   .right{min-width:0}
+  @media (min-width:901px){
+    .right{position:sticky;top:20px;align-self:start;max-height:calc(100vh - 40px);overflow:auto}
+  }
   .preview-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
   .preview-head .dims{font-size:14px;font-weight:700;color:var(--mut)}
   .preview-head .dims b{color:var(--text);font-size:17px}
@@ -973,20 +976,33 @@ function statsEntries(){
   return [...freq.entries()].sort((a,b)=>codeSort(RGB[a[0]].code,RGB[b[0]].code));
 }
 
+/* 当前色卡标签（品牌 + 色数），用于导出标题 */
+function paletteLabel(){
+  if(PAL==='mard') return `MARD 漫得 · ${MARD_MODE} 色`;
+  return `${PALETTES[PAL].name} · ${PALETTES[PAL].count} 色`;
+}
+/* 今天日期 YYYY-MM-DD，用于导出标题 */
+function todayStr(){
+  const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
 /* 完整导出：标题 + 拼豆格图 + 色号对照统计清单 合成一张 */
 function exportPng(){
   useApplied(()=>{
   const w=gridW,h=gridH; if(!w) return;
   const size=+($('beadSize').querySelector('.on').dataset.v);
+  const beadName=$('beadSize').querySelector('.on').textContent.split('·')[0].trim();
   const cell=30, pad=26;
   const board=renderBoard(cell,pad,true);
   const entries=statsEntries();
 
-  const perRow=6, itemW=150, itemH=40, gap=10;
+  const itemW=140, itemH=40, gap=8;
+  const perRow=Math.max(1, Math.floor((board.width + gap)/(itemW + gap)));
   const rows=Math.max(1,Math.ceil(entries.length/perRow));
   const statsW=perRow*itemW+(perRow-1)*gap;
   const margin=30;
-  const titleH=86, statsTitleH=52;
+  const titleH=112, statsTitleH=52;
   const cw=Math.max(board.width, statsW)+margin*2;
   const ch=titleH+board.height+statsTitleH+rows*(itemH+gap)+margin*2;
 
@@ -994,12 +1010,14 @@ function exportPng(){
   const x=c.getContext('2d');
   x.fillStyle='#fff'; x.fillRect(0,0,cw,ch);
 
-  // 标题
-  x.fillStyle='#1c2128'; x.textAlign='center'; x.textBaseline='alphabetic';
-  x.font='800 26px "Microsoft YaHei",sans-serif';
-  x.fillText('拼豆色号图纸', cw/2, 42);
+  // 标题（品牌色卡 + 日期 + 规格）
+  x.textAlign='center'; x.textBaseline='alphabetic';
+  x.fillStyle='#1c2128'; x.font='800 30px "Microsoft YaHei",sans-serif';
+  x.fillText('拼豆色号图纸', cw/2, 44);
+  x.fillStyle='#5b6cf0'; x.font='700 15px "Microsoft YaHei",sans-serif';
+  x.fillText(`${paletteLabel()} · ${todayStr()}`, cw/2, 72);
   x.fillStyle='#7c8595'; x.font='14px "Microsoft YaHei",sans-serif';
-  x.fillText(`${w} × ${h} 格 · 迷你豆 ${size}mm · 成品约 ${(w*size/10).toFixed(1)} × ${(h*size/10).toFixed(1)} cm`, cw/2, 68);
+  x.fillText(`${w} × ${h} 格 · ${beadName} ${size}mm · 成品约 ${(w*size/10).toFixed(1)} × ${(h*size/10).toFixed(1)} cm`, cw/2, 96);
 
   // 图纸
   const bx=(cw-board.width)/2, by=titleH+14;
