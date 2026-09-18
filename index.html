@@ -101,7 +101,10 @@
   .bg-pick-btn{padding:5px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:700;color:#4a5361;transition:.12s}
   .bg-pick-btn:hover{border-color:var(--pri);color:var(--pri)}
   .bg-pick-btn.active{border-color:var(--pri);background:var(--pri-soft);color:var(--pri)}
-  .bg-swatch{width:20px;height:20px;border-radius:6px;border:1px solid rgba(0,0,0,.15);flex:0 0 auto;display:none}
+  .bg-swatches{display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap}
+  .bg-swatch{width:18px;height:18px;border-radius:5px;border:1px solid var(--line);box-shadow:inset 0 0 0 1px rgba(0,0,0,.04);flex:0 0 auto}
+  .bg-clear{padding:3px 9px;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer;font-size:11px;font-weight:600;color:var(--mut);transition:.12s}
+  .bg-clear:hover{border-color:#e5484d;color:#e5484d}
   .bg-hint{font-size:12px;color:var(--mut)}
   #thumbImg.picking{cursor:crosshair;outline:2px solid var(--pri);outline-offset:-2px}
   .btn{display:block;width:100%;padding:13px;border:none;border-radius:11px;background:linear-gradient(120deg,#5b6cf0,#7c5bf0);color:#fff;font-size:15px;font-weight:800;cursor:pointer;transition:.15s;letter-spacing:1px;box-shadow:0 4px 14px rgba(91,108,240,.28)}
@@ -299,7 +302,8 @@
         <label class="check"><input type="checkbox" id="removeBg"> 去除纯色背景（背景格不计入）</label>
         <div class="bg-pick" id="bgPick" style="display:none">
           <button type="button" class="bg-pick-btn" id="bgPickBtn">拾取背景色</button>
-          <span class="bg-swatch" id="bgSwatch" title="已选背景色"></span>
+          <span class="bg-swatches" id="bgSwatches"></span>
+          <button type="button" class="bg-clear" id="bgClear" style="display:none">清除</button>
           <span class="bg-hint" id="bgHint"></span>
         </div>
       </div>
@@ -587,7 +591,7 @@ function codeFont(cell, code){
 let img=null, imgW=0, imgH=0, grid=null, gridW=0, gridH=0;
 let appliedGrid=null, appliedW=0, appliedH=0; // 已「应用」的正式网格（下载用它；滑杆预览不覆盖它）
 let showCode=true, showGrid=true;
-let bgColor=null; // 手动拾取的背景色 {r,g,b}，null=未拾取（退回四角自动检测）
+let bgColors=[]; // 手动拾取的背景色列表 [{r,g,b},...]，空=未拾取（退回四角自动检测）
 let crop=null; // 裁切区域 {x,y,w,h} 相对原图 0~1 比例, null=全图
 
 /* 当前有效源宽高比（裁切后按裁切区域算） */
@@ -702,23 +706,21 @@ function generate(commit){
     }
   }
 
-  // 去背景：优先用「手动拾取」的背景色；未拾取时退回四角平均色。
+  // 去背景：优先用「手动拾取」的背景色列表；未拾取时退回四角平均色。
   // 对比「原始像素」而非匹配后的色号色，更贴合拾取到的背景；阈值放宽以覆盖近白等 JPEG 噪声
   if(removeBg){
-    let sr,sg,sb;
-    if(bgColor){ sr=bgColor.r; sg=bgColor.g; sb=bgColor.b; }
-    else {
+    let targets=bgColors.slice();
+    if(targets.length===0){
       const corners=[[0,0],[w-1,0],[0,h-1],[w-1,h-1]];
-      sr=0; sg=0; sb=0; let n=0;
-      corners.forEach(([cx,cy])=>{ const p=(cy*w+cx)*4; if(data[p+3]>=40){ sr+=data[p]; sg+=data[p+1]; sb+=data[p+2]; n++; } });
-      if(n===0){ sr=null; } else { sr/=n; sg/=n; sb/=n; }
+      let sr=0,sg=0,sb=0,n=0;
+      corners.forEach(([cx,cy])=>{ const p=(cy*w+cx)*4; if(data[p+3]>=40){ sr+=data[p];sg+=data[p+1];sb+=data[p+2];n++; } });
+      if(n) targets=[{r:sr/n,g:sg/n,b:sb/n}];
     }
-    if(sr!=null){
-      for(let i=0;i<w*h;i++){
-        if(grid[i]<0) continue;
-        const p=i*4;
-        if(dist(data[p],data[p+1],data[p+2],sr,sg,sb)<48) grid[i]=-1;
-      }
+    for(let i=0;i<w*h;i++){
+      if(grid[i]<0) continue;
+      const p=i*4;
+      const r=data[p],g=data[p+1],b=data[p+2];
+      for(const t of targets){ if(dist(r,g,b,t.r,t.g,t.b)<48){ grid[i]=-1; break; } }
     }
   }
 
@@ -990,7 +992,7 @@ function loadFile(f){
   im.onload=()=>{
     img=im; imgW=im.naturalWidth; imgH=im.naturalHeight;
     crop=null; cropToggle.textContent='裁切图片';
-    bgColor=null; $('bgSwatch').style.display='none'; $('bgHint').textContent='';
+    bgColors=[]; renderBgSwatches();
     thumbImg.src=url; thumbMeta.textContent=`${imgW} × ${imgH} px`;
     thumb.style.display='block';
     $('cropActions').style.display='flex';
@@ -1092,11 +1094,11 @@ bindRange('saturation','satVal',v=>v,()=>schedulePreview($('applyTone')));
 $('keepRatio').addEventListener('change',()=>{ if($('keepRatio').checked && img) syncRatio(true); });
 $('removeBg').addEventListener('change',()=>{
   $('bgPick').style.display = $('removeBg').checked ? 'flex' : 'none';
-  if($('removeBg').checked && !bgColor) $('bgHint').textContent='未拾取（自动四角检测）';
+  if($('removeBg').checked) renderBgSwatches();
   generate();
 });
 
-/* 手动拾取背景色：点「拾取背景色」→ 在缩略图上点一下背景处 */
+/* 手动拾取背景色（可重复）：点「拾取背景色」进入拾取态 → 在缩略图上连续点背景处，可累计多个色 */
 let pickingBg=false;
 function readPixel(px,py){
   const c=document.createElement('canvas'); c.width=1; c.height=1;
@@ -1105,27 +1107,38 @@ function readPixel(px,py){
   const d=cx.getImageData(0,0,1,1).data;
   return {r:d[0],g:d[1],b:d[2]};
 }
+function renderBgSwatches(){
+  const box=$('bgSwatches');
+  box.innerHTML='';
+  bgColors.forEach(c=>{
+    const hex='#'+[c.r,c.g,c.b].map(v=>v.toString(16).padStart(2,'0')).join('').toUpperCase();
+    const s=document.createElement('span');
+    s.className='bg-swatch'; s.style.background=hex; s.title=hex;
+    box.appendChild(s);
+  });
+  $('bgClear').style.display = bgColors.length ? 'inline-block' : 'none';
+  $('bgHint').textContent = bgColors.length ? `已选 ${bgColors.length} 个背景色` : '未拾取（自动四角检测）';
+}
 $('bgPickBtn').addEventListener('click',()=>{
   if(!img) return;
   pickingBg=!pickingBg;
   $('bgPickBtn').classList.toggle('active',pickingBg);
-  $('bgPickBtn').textContent = pickingBg ? '点击图上背景处…' : '拾取背景色';
+  $('bgPickBtn').textContent = pickingBg ? '完成拾取' : '拾取背景色';
   thumbImg.classList.toggle('picking',pickingBg);
+  if(pickingBg) $('bgHint').textContent='点击图中背景处，可连续多次';
+});
+$('bgClear').addEventListener('click',()=>{
+  bgColors=[];
+  renderBgSwatches();
+  generate();
 });
 thumbImg.addEventListener('click',e=>{
   if(!pickingBg || !img) return;
   const rect=thumbImg.getBoundingClientRect();
   const px=Math.max(0,Math.min(imgW-1,Math.floor((e.clientX-rect.left)/rect.width*imgW)));
   const py=Math.max(0,Math.min(imgH-1,Math.floor((e.clientY-rect.top)/rect.height*imgH)));
-  bgColor=readPixel(px,py);
-  const hex='#'+[bgColor.r,bgColor.g,bgColor.b].map(v=>v.toString(16).padStart(2,'0')).join('').toUpperCase();
-  $('bgSwatch').style.background=hex;
-  $('bgSwatch').style.display='inline-block';
-  $('bgHint').textContent='已选 '+hex;
-  pickingBg=false;
-  $('bgPickBtn').classList.remove('active');
-  $('bgPickBtn').textContent='拾取背景色';
-  thumbImg.classList.remove('picking');
+  bgColors.push(readPixel(px,py));
+  renderBgSwatches();
   generate();
 });
 $('dither').addEventListener('change',()=>generate());
@@ -1286,7 +1299,7 @@ function restoreSettings(){
   if(typeof d.keepRatio==='boolean') $('keepRatio').checked=d.keepRatio;
   if(d.colorLimit){ $('colorLimit').value=d.colorLimit; $('colorVal').textContent=d.colorLimit>=48?'不限':d.colorLimit; }
   if(d.shape){ const b=$('shape').querySelector(`[data-v="${d.shape}"]`); if(b){ $('shape').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); } }
-  if(typeof d.removeBg==='boolean'){ $('removeBg').checked=d.removeBg; $('bgPick').style.display = d.removeBg ? 'flex' : 'none'; }
+  if(typeof d.removeBg==='boolean'){ $('removeBg').checked=d.removeBg; $('bgPick').style.display = d.removeBg ? 'flex' : 'none'; if(d.removeBg) renderBgSwatches(); }
   if(typeof d.dither==='boolean') $('dither').checked=d.dither;
   if(d.brightness!=null){ $('brightness').value=d.brightness; $('briVal').textContent=d.brightness; }
   if(d.contrast!=null){ $('contrast').value=d.contrast; $('conVal').textContent=d.contrast; }
