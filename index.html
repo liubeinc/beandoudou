@@ -1393,7 +1393,7 @@ modalImg.addEventListener('click',e=>{
 });
 mUndo.addEventListener('click',()=>{ bgColors.pop(); renderBgSwatches(); });
 mClear.addEventListener('click',()=>{ bgColors=[]; renderBgSwatches(); });
-mDone.addEventListener('click',()=>{ closeModal(); generate(); });
+mDone.addEventListener('click',()=>{ $('removeBg').checked=true; $('bgPick').style.display='flex'; renderBgSwatches(); closeModal(); generate(); });
 
 /* ============ 记忆上次设置 (localStorage) ============ */
 const LS_KEY='beandou_settings_v1';
@@ -1416,7 +1416,7 @@ function restoreSettings(){
   // 品牌
   if(d.pal && PALETTES[d.pal]){
     document.querySelectorAll('#brand > button').forEach(x=>x.classList.remove('on'));
-    const btn=$('brand').querySelector(`> button[data-v="${d.pal}"]`); if(btn) btn.classList.add('on');
+    const btn=$('brand').querySelector(`button[data-v="${d.pal}"]`); if(btn) btn.classList.add('on');
   }
   // MARD 色数（同步二级下拉选中态）
   if(d.mardMode==='221'||d.mardMode==='291'){
