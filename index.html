@@ -134,6 +134,7 @@
   .mobile-genbar .gmeta b{color:var(--text);font-weight:800}
   .mobile-genbar .gbtn{flex:0 0 auto;padding:12px 24px;border:none;border-radius:11px;background:linear-gradient(120deg,#5b6cf0,#7c5bf0);color:#fff;font-size:15px;font-weight:800;cursor:pointer;box-shadow:0 4px 14px rgba(91,108,240,.28)}
   .mobile-genbar .gbtn:active{filter:brightness(.97)}
+  .mobile-genbar .gbtn.ghost{background:#fff;color:var(--pri);border:1px solid var(--line);box-shadow:none;padding:12px 18px}
   .zoom-badge{position:absolute;top:10px;right:12px;z-index:5;padding:3px 9px;border-radius:999px;background:rgba(28,40,58,.72);color:#fff;font-size:12px;font-weight:700;display:none;pointer-events:none}
   /* 弹窗预览（裁切/拾取背景色） */
   .modal-overlay{position:fixed;inset:0;z-index:100;background:rgba(15,18,26,.6);display:flex;align-items:center;justify-content:center;padding:16px}
@@ -174,7 +175,19 @@
   .toolbar button{padding:8px 14px;border:1px solid var(--line);border-radius:9px;background:#fff;cursor:pointer;font-size:13px;font-weight:600;color:#4a5361;transition:.12s}
   .toolbar button:hover{border-color:var(--pri);color:var(--pri)}
   .toolbar button.on{border-color:var(--pri);background:var(--pri-soft);color:var(--pri)}
-  .export-bar{margin-top:12px}
+  .export-bar{display:flex;gap:10px;margin-top:14px;align-items:center;flex-wrap:wrap}
+  .export-bar .dl{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:11px 22px;border:none;border-radius:11px;background:linear-gradient(120deg,#5b6cf0,#7c5bf0);color:#fff;font-size:14px;font-weight:800;cursor:pointer;box-shadow:0 4px 12px rgba(91,108,240,.28);transition:.15s}
+  .export-bar .dl:hover{filter:brightness(1.06);transform:translateY(-1px)}
+  .export-bar .dl .caret{opacity:.85;margin-left:4px}
+  .export-bar .print{margin:0;display:inline-flex;align-items:center;justify-content:center;padding:11px 18px;border:1px solid var(--line);border-radius:11px;background:#fff;font-size:14px;font-weight:700;color:#4a5361;cursor:pointer;transition:.12s}
+  .export-bar .print:hover{border-color:var(--pri);color:var(--pri)}
+  .export-bar .submenu{min-width:240px}
+  .export-bar .submenu button{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:9px 12px;border:none;border-radius:7px;background:transparent;text-align:left;cursor:pointer;transition:.12s;white-space:normal}
+  .export-bar .submenu button:hover{background:var(--pri-soft)}
+  .export-bar .submenu .dl-t{font-size:13px;font-weight:700;color:var(--text)}
+  .export-bar .submenu .dl-s{font-size:11px;color:var(--mut);font-weight:400}
+  /* 键盘可达性焦点态 */
+  button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--pri);outline-offset:2px}
   .stage{position:relative;background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;overflow:auto;text-align:center}
   .stage canvas{max-width:100%;image-rendering:pixelated;image-rendering:crisp-edges;border-radius:4px}
   .placeholder{color:var(--mut);padding:60px 20px;text-align:center}
@@ -314,13 +327,7 @@
         <div class="row-head">
           <label>高度（颗数）<span class="val" id="hVal">60</span></label>
           <div class="row-actions">
-            <div class="split-btn">
-              <button class="btn ghost" id="applySize"><span class="lbl">应用更改</span></button>
-              <button class="btn ghost split-caret" aria-label="恢复默认" title="恢复默认"><span class="caret">▾</span></button>
-              <div class="submenu" id="sizeMenu" hidden>
-                <button data-reset="size">恢复默认</button>
-              </div>
-            </div>
+            <button class="btn ghost reset" id="resetSize" type="button">恢复默认</button>
           </div>
         </div>
         <input type="range" id="height" min="8" max="200" value="60" step="1">
@@ -335,17 +342,11 @@
         <div class="row-head">
           <label>颜色数量 <span class="val" id="colorVal">不限</span></label>
           <div class="row-actions">
-            <div class="split-btn">
-              <button class="btn ghost" id="applyColor"><span class="lbl">应用更改</span></button>
-              <button class="btn ghost split-caret" aria-label="恢复默认" title="恢复默认"><span class="caret">▾</span></button>
-              <div class="submenu" id="colorMenu" hidden>
-                <button data-reset="color">恢复默认</button>
-              </div>
-            </div>
+            <button class="btn ghost reset" id="resetColor" type="button">恢复默认</button>
           </div>
         </div>
         <input type="range" id="colorLimit" min="1" max="48" value="48" step="1">
-        <div class="range-labels"><span>1</span><span>48</span></div>
+        <div class="range-labels"><span>1</span><span>不限</span></div>
       </div>
 
       <div class="row">
@@ -402,31 +403,23 @@
         <div class="row-head">
           <label>调色 · 饱和度 <span class="val" id="satVal">0</span></label>
           <div class="row-actions">
-            <div class="split-btn">
-              <button class="btn ghost" id="applyTone"><span class="lbl">应用更改</span></button>
-              <button class="btn ghost split-caret" aria-label="恢复默认" title="恢复默认"><span class="caret">▾</span></button>
-              <div class="submenu" id="toneMenu" hidden>
-                <button data-reset="tone">恢复默认</button>
-              </div>
-            </div>
+            <button class="btn ghost reset" id="resetTone" type="button">恢复默认</button>
           </div>
         </div>
         <input type="range" id="saturation" min="-100" max="100" value="0" step="1">
       </div>
 
-      <button class="btn" id="generate">生成拼豆图纸</button>
-
-      <div class="toolbar export-bar" id="exportBar" style="display:none">
+      <div class="export-bar" id="exportBar" style="display:none">
         <div class="split-group">
-          <button id="downloadBtn"><span class="lbl">下载</span><span class="caret">▾</span></button>
+          <button class="dl" id="downloadBtn"><span class="lbl">下载图纸</span><span class="caret">▾</span></button>
           <div class="submenu" id="downloadMenu" hidden>
-            <button data-dl="png">下载图纸+清单</button>
-            <button data-dl="plain">纯色块 PNG</button>
-            <button data-dl="csv">下载色号矩阵</button>
-            <button data-dl="shop">购物清单 CSV</button>
+            <button data-dl="png"><span class="dl-t">图纸 + 统计</span><span class="dl-s">带色号标注的完整图纸 PNG</span></button>
+            <button data-dl="plain"><span class="dl-t">纯色块图纸</span><span class="dl-s">无标注、纯色块 PNG</span></button>
+            <button data-dl="csv"><span class="dl-t">色号矩阵</span><span class="dl-s">逐格色号 CSV</span></button>
+            <button data-dl="shop"><span class="dl-t">购物清单</span><span class="dl-s">色号 × 颗数 CSV</span></button>
           </div>
         </div>
-        <button id="printBtn">打印</button>
+        <button class="print" id="printBtn">打印</button>
       </div>
     </div>
   </div>
@@ -471,6 +464,7 @@
   <div class="mobile-genbar" id="genBar">
     <div class="gmeta" id="genMeta">上传图片后，点此生成图纸</div>
     <button class="gbtn" id="genBarBtn" type="button">生成图纸</button>
+    <button class="gbtn ghost" id="genBarDownload" type="button">下载</button>
   </div>
 
   <div class="modal-overlay" id="modal" style="display:none">
@@ -859,7 +853,7 @@ function generate(commit){
   $('toolbar').style.display='flex';
   $('exportBar').style.display='flex';
   $('placeholder').style.display='none';
-  if(commit!==false){ commitGrid(); clearPending(); }
+  commitGrid();
 }
 
 // 把当前网格快照为「已应用」正式结果（下载/导出用它）
@@ -1131,10 +1125,21 @@ function loadFile(f){
   const url=URL.createObjectURL(f);
   const im=new Image();
   im.onload=()=>{
-    img=im; imgW=im.naturalWidth; imgH=im.naturalHeight;
+    // 超大图降采样（限制最长边），避免全分辨率解码/预览/拾取卡顿
+    const MAX=4096;
+    let work=im, thumbUrl=url;
+    if(im.naturalWidth>MAX || im.naturalHeight>MAX){
+      const s=MAX/Math.max(im.naturalWidth, im.naturalHeight);
+      const cw=Math.max(1,Math.round(im.naturalWidth*s)), ch=Math.max(1,Math.round(im.naturalHeight*s));
+      const c=document.createElement('canvas'); c.width=cw; c.height=ch;
+      const cx=c.getContext('2d'); cx.imageSmoothingEnabled=true; cx.imageSmoothingQuality='high';
+      cx.drawImage(im,0,0,im.naturalWidth,im.naturalHeight,0,0,cw,ch);
+      work=c; thumbUrl=c.toDataURL('image/jpeg',0.9); URL.revokeObjectURL(url);
+    }
+    img=work; imgW=work.naturalWidth||work.width; imgH=work.naturalHeight||work.height;
     crop=null; cropToggle.textContent='裁切图片';
     bgColors=[]; renderBgSwatches();
-    thumbImg.src=url; thumbMeta.textContent=`${imgW} × ${imgH} px`;
+    thumbImg.src=thumbUrl; thumbMeta.textContent=`${imgW} × ${imgH} px`;
     thumb.style.display='block';
     $('cropActions').style.display='flex';
     $('settingsCard').style.display='block';
@@ -1190,19 +1195,10 @@ $('shape').addEventListener('click',e=>{
   b.classList.add('on');
   generate();
 });
-/* 滑块联动：拖动时实时预览（画布跟着变），但不「应用」；
-   点「应用更改」才把当前预览提交为正式结果（下载用它）。rAF 节流避免拖动卡顿 */
-function setPending(btn, on){
-  const lbl=btn.querySelector('.lbl');
-  if(on){ btn.classList.add('pending'); if(lbl) lbl.textContent='应用更改 · 待应用'; else btn.textContent='应用更改 · 待应用'; }
-  else { btn.classList.remove('pending'); if(lbl) lbl.textContent='应用更改'; else btn.textContent='应用更改'; }
-}
-function markPending(btn){ if(!img) return; setPending(btn,true); }
-function clearPending(){ setPending($('applySize'),false); setPending($('applyColor'),false); setPending($('applyTone'),false); }
+/* 滑块拖动：实时预览（rAF 节流避免卡顿），所见即所得，导出基于当前图 */
 let previewPending=false;
-function schedulePreview(btn){
+function schedulePreview(){
   if(!img) return;
-  markPending(btn);
   if(previewPending) return;
   previewPending=true;
   requestAnimationFrame(()=>{ previewPending=false; generate(false); });
@@ -1224,16 +1220,16 @@ function syncRatio(fromW){
 }
 bindRange('width','wVal',v=>v,()=>{
   if($('keepRatio').checked && img) syncRatio(true);
-  schedulePreview($('applySize'));
+  schedulePreview();
 });
 bindRange('height','hVal',v=>v,()=>{
   if($('keepRatio').checked && img) syncRatio(false);
-  schedulePreview($('applySize'));
+  schedulePreview();
 });
-bindRange('colorLimit','colorVal',v=>v>=48?'不限':v,()=>schedulePreview($('applyColor')));
-bindRange('brightness','briVal',v=>v,()=>schedulePreview($('applyTone')));
-bindRange('contrast','conVal',v=>v,()=>schedulePreview($('applyTone')));
-bindRange('saturation','satVal',v=>v,()=>schedulePreview($('applyTone')));
+bindRange('colorLimit','colorVal',v=>v>=48?'不限':v,()=>schedulePreview());
+bindRange('brightness','briVal',v=>v,()=>schedulePreview());
+bindRange('contrast','conVal',v=>v,()=>schedulePreview());
+bindRange('saturation','satVal',v=>v,()=>schedulePreview());
 $('keepRatio').addEventListener('change',()=>{ if($('keepRatio').checked && img) syncRatio(true); });
 $('removeBg').addEventListener('change',()=>{
   $('bgPick').style.display = $('removeBg').checked ? 'flex' : 'none';
@@ -1266,7 +1262,7 @@ function renderBgSwatches(){
   $('bgUndo').style.display = n ? 'inline-block' : 'none';
   $('pickClear').style.display = n ? 'inline-block' : 'none';
   $('pickUndo').style.display = n ? 'inline-block' : 'none';
-  $('bgHint').textContent = n ? `已选 ${n} 个背景色` : '未拾取（自动四角检测）';
+  $('bgHint').textContent = n ? `已选 ${n} 个背景色` : '未手动拾取：自动用四角平均色去背景';
   $('pickHint').textContent = n ? `已选 ${n} 个背景色` : '点击图中背景处，可连续多次';
 }
 $('bgPickBtn').addEventListener('click',()=>{ if(!img) return; openPickPanel(); });
@@ -1323,19 +1319,6 @@ pickUndo.addEventListener('click',()=>{ bgColors.pop(); renderBgSwatches(); gene
 pickClear.addEventListener('click',()=>{ bgColors=[]; renderBgSwatches(); generate(false); });
 pickDone.addEventListener('click',()=>{ $('removeBg').checked=true; $('bgPick').style.display='flex'; renderBgSwatches(); closePickPanel(true); });
 $('dither').addEventListener('change',()=>generate());
-$('generate').addEventListener('click',()=>{ generate(); scrollToResult(); });
-/* 应用更改 ▾ 合并：点正文=应用；点 ▾=展开「恢复默认」二级下拉 */
-function setupApplySplit(applyId, menuId, resetFn){
-  const applyBtn=$(applyId), menu=$(menuId);
-  const caretBtn=applyBtn.parentElement.querySelector('.split-caret');
-  applyBtn.addEventListener('click',()=>{ menu.hidden=true; generate(); });
-  caretBtn.addEventListener('click',()=>{ menu.hidden=!menu.hidden; });
-  menu.addEventListener('click',e=>{
-    const b=e.target.closest('button'); if(!b) return;
-    menu.hidden=true;
-    resetFn();
-  });
-}
 const DEFAULTS={ width:60, height:60, colorLimit:48, brightness:0, contrast:0, saturation:0 };
 function resetSliders(ids){
   ids.forEach(id=>{ $(id).value=DEFAULTS[id]; });
@@ -1346,9 +1329,10 @@ function resetSliders(ids){
   $('conVal').textContent=$('contrast').value;
   $('satVal').textContent=$('saturation').value;
 }
-setupApplySplit('applySize','sizeMenu',()=>{ resetSliders(['width','height']); schedulePreview($('applySize')); });
-setupApplySplit('applyColor','colorMenu',()=>{ resetSliders(['colorLimit']); schedulePreview($('applyColor')); });
-setupApplySplit('applyTone','toneMenu',()=>{ resetSliders(['brightness','contrast','saturation']); schedulePreview($('applyTone')); });
+/* 恢复默认（按组分项重置） */
+$('resetSize').addEventListener('click',()=>{ resetSliders(['width','height']); generate(); });
+$('resetColor').addEventListener('click',()=>{ resetSliders(['colorLimit']); generate(); });
+$('resetTone').addEventListener('click',()=>{ resetSliders(['brightness','contrast','saturation']); generate(); });
 
 /* 工具栏：显示组（显示 ▾ 色号标注/网格线）+ 导出组（下载 ▾ 打印） */
 $('displayBtn').addEventListener('click',function(){ $('displayMenu').hidden=!$('displayMenu').hidden; });
@@ -1569,6 +1553,7 @@ function initStageZoom(){
   window.__resetZoom=function(){ scale=1; tx=0; ty=0; apply(); };
 }
 $('genBarBtn').addEventListener('click',()=>{ generate(); scrollToResult(); });
+$('genBarDownload').addEventListener('click',()=>{ if(!img) return; exportPng(); });
 initStageZoom();
 
 /* ============ 平面图自动识别 + 颜色数提示 ============ */
