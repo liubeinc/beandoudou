@@ -174,6 +174,7 @@
   .toolbar button{padding:8px 14px;border:1px solid var(--line);border-radius:9px;background:#fff;cursor:pointer;font-size:13px;font-weight:600;color:#4a5361;transition:.12s}
   .toolbar button:hover{border-color:var(--pri);color:var(--pri)}
   .toolbar button.on{border-color:var(--pri);background:var(--pri-soft);color:var(--pri)}
+  .export-bar{margin-top:12px}
   .stage{position:relative;background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;overflow:auto;text-align:center}
   .stage canvas{max-width:100%;image-rendering:pixelated;image-rendering:crisp-edges;border-radius:4px}
   .placeholder{color:var(--mut);padding:60px 20px;text-align:center}
@@ -425,6 +426,19 @@
       </div>
 
       <button class="btn" id="generate">生成拼豆图纸</button>
+
+      <div class="toolbar export-bar" id="exportBar" style="display:none">
+        <div class="split-group">
+          <button id="downloadBtn"><span class="lbl">下载</span><span class="caret">▾</span></button>
+          <div class="submenu" id="downloadMenu" hidden>
+            <button data-dl="png">下载图纸+清单</button>
+            <button data-dl="plain">纯色块 PNG</button>
+            <button data-dl="csv">下载色号矩阵</button>
+            <button data-dl="shop">购物清单 CSV</button>
+          </div>
+        </div>
+        <button id="printBtn">打印</button>
+      </div>
     </div>
   </div>
 
@@ -441,17 +455,6 @@
               <button id="toggleGrid" class="on">网格线<span class="tick">✓</span></button>
             </div>
           </div>
-          <span class="tsep"></span>
-          <div class="split-group">
-            <button id="downloadBtn"><span class="lbl">下载</span><span class="caret">▾</span></button>
-            <div class="submenu" id="downloadMenu" hidden>
-              <button data-dl="png">下载图纸+清单</button>
-              <button data-dl="plain">纯色块 PNG</button>
-              <button data-dl="csv">下载色号矩阵</button>
-              <button data-dl="shop">购物清单 CSV</button>
-            </div>
-          </div>
-          <button id="printBtn">打印</button>
         </div>
       </div>
       <div class="stage">
@@ -865,6 +868,7 @@ function generate(commit){
   buildStats();
   updateDims(w,h);
   $('toolbar').style.display='flex';
+  $('exportBar').style.display='flex';
   $('placeholder').style.display='none';
   if(commit!==false){ commitGrid(); clearPending(); }
 }
@@ -1290,8 +1294,16 @@ $('bgUndo').addEventListener('click',()=>{
 /* ============ 拾取背景色：左侧内嵌预览面板（不遮挡右侧图纸） ============ */
 const pickPanel=$('pickPanel'), pickImg=$('pickImg');
 const pickUndo=$('pickUndo'), pickClear=$('pickClear'), pickDone=$('pickDone');
+/* 拾取背景色时显示的预览图：已裁切则只显示裁切区域 */
+function cropPreviewSrc(){
+  if(!crop) return thumbImg.src;
+  const sw=Math.max(1,Math.round(crop.w*imgW)), sh=Math.max(1,Math.round(crop.h*imgH));
+  const c=document.createElement('canvas'); c.width=sw; c.height=sh;
+  c.getContext('2d').drawImage(img, crop.x*imgW, crop.y*imgH, crop.w*imgW, crop.h*imgH, 0, 0, sw, sh);
+  return c.toDataURL('image/png');
+}
 function openPickPanel(){
-  pickImg.src=thumbImg.src;
+  pickImg.src=cropPreviewSrc();
   pickPanel.style.display='block';
   $('bgPickBtn').classList.add('active');
   renderBgSwatches();
@@ -1305,8 +1317,13 @@ function closePickPanel(commit){
 function pickFromImg(ev){
   if(!img) return;
   const rect=pickImg.getBoundingClientRect();
-  const px=Math.max(0,Math.min(imgW-1,Math.floor((ev.clientX-rect.left)/rect.width*imgW)));
-  const py=Math.max(0,Math.min(imgH-1,Math.floor((ev.clientY-rect.top)/rect.height*imgH)));
+  const fx=Math.max(0,Math.min(1,(ev.clientX-rect.left)/rect.width));
+  const fy=Math.max(0,Math.min(1,(ev.clientY-rect.top)/rect.height));
+  // 预览显示的是裁切区域（若已裁切），把比例映射回原图坐标再读色
+  const sx=(crop ? crop.x + fx*crop.w : fx)*imgW;
+  const sy=(crop ? crop.y + fy*crop.h : fy)*imgH;
+  const px=Math.max(0,Math.min(imgW-1,Math.floor(sx)));
+  const py=Math.max(0,Math.min(imgH-1,Math.floor(sy)));
   bgColors.push(readPixel(px,py));
   renderBgSwatches();
   generate(false); // 实时刷新右侧图纸（不提交、不重置缩放）
