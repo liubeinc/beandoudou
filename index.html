@@ -184,6 +184,9 @@
   .export-bar .dl .caret{opacity:.85;margin-left:4px}
   .export-bar .print{margin:0;display:inline-flex;align-items:center;justify-content:center;padding:11px 18px;border:1px solid var(--line);border-radius:11px;background:#fff;font-size:14px;font-weight:700;color:#4a5361;cursor:pointer;transition:.12s}
   .export-bar .print:hover{border-color:var(--pri);color:var(--pri)}
+  .export-bar .split-btn{display:inline-flex;align-items:stretch}
+  .export-bar .split-btn .dl{border-radius:11px 0 0 11px}
+  .export-bar .split-btn .caret-btn{border-radius:0 11px 11px 0;padding:11px 12px;border-left:1px solid rgba(255,255,255,.4)}
   .export-bar .submenu{min-width:240px}
   .export-bar .submenu button{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:9px 12px;border:none;border-radius:7px;background:transparent;text-align:left;cursor:pointer;transition:.12s;white-space:normal}
   .export-bar .submenu button:hover{background:var(--pri-soft)}
@@ -428,7 +431,10 @@
 
       <div class="export-bar" id="exportBar" style="display:none">
         <div class="split-group">
-          <button class="dl" id="downloadBtn"><span class="lbl">下载图纸</span><span class="caret">▾</span></button>
+          <div class="split-btn">
+            <button class="dl" id="downloadBtn"><span class="lbl">下载图纸</span></button>
+            <button class="dl caret-btn" id="downloadCaret" type="button" aria-label="更多导出选项" aria-haspopup="true" aria-expanded="false">▾</button>
+          </div>
           <div class="submenu" id="downloadMenu" hidden>
             <button data-dl="png"><span class="dl-t">图纸 + 统计</span><span class="dl-s">带色号标注的完整图纸 PNG</span></button>
             <button data-dl="plain"><span class="dl-t">纯色块图纸</span><span class="dl-s">无标注、纯色块 PNG</span></button>
@@ -1097,9 +1103,12 @@ function exportPngPlain(){
 function exportCsv(){
   useApplied(()=>{
   const w=gridW,h=gridH; if(!w) return;
-  let lines=[];
+  // 首行列号 + 每行行号，与图纸坐标刻度（1 起）对应，逐格可回溯
+  const header=[''];
+  for(let x=0;x<w;x++) header.push(String(x+1));
+  const lines=[header.join(',')];
   for(let y=0;y<h;y++){
-    const row=[];
+    const row=[String(y+1)];
     for(let x=0;x<w;x++){ const g=grid[y*w+x]; row.push(g<0?'':RGB[g].code); }
     lines.push(row.join(','));
   }
@@ -1172,6 +1181,7 @@ function loadFile(f){
     updateDims(+$('width').value,+$('height').value);
     if(detectFlat()) $('dither').checked=false; // 平面图自动关抖动
     generate();
+    saveProjectImage();
     if(isCoarse()) $('genBar').classList.add('show');
   };
   im.src=url;
@@ -1199,7 +1209,7 @@ $('brand').addEventListener('click',e=>{
 /* 点击下拉或触发按钮外，收起所有二级下拉 */
 document.addEventListener('click',e=>{
   const t=e.target;
-  if(t.closest('.submenu') || t.closest('.split-caret') || t.closest('#brand') || t.closest('#displayBtn') || t.closest('#downloadBtn')) return;
+  if(t.closest('.submenu') || t.closest('.split-caret') || t.closest('#brand') || t.closest('#displayBtn') || t.closest('#downloadBtn') || t.closest('#downloadCaret')) return;
   document.querySelectorAll('.submenu').forEach(m=>{ m.hidden=true; });
 });
 /* 规格 */
@@ -1473,7 +1483,12 @@ $('toggleGrid').addEventListener('click',function(){
   showGrid=!showGrid; this.classList.toggle('on',showGrid); draw();
   $('displayMenu').hidden=true;
 });
-$('downloadBtn').addEventListener('click',function(){ $('downloadMenu').hidden=!$('downloadMenu').hidden; });
+$('downloadBtn').addEventListener('click',()=>{ if(img) exportPng(); });
+$('downloadCaret').addEventListener('click',function(e){
+  e.stopPropagation();
+  const m=$('downloadMenu'); m.hidden=!m.hidden;
+  this.setAttribute('aria-expanded', String(!m.hidden));
+});
 $('downloadMenu').addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b) return;
   $('downloadMenu').hidden=true;
@@ -1552,12 +1567,26 @@ mCropApply.addEventListener('click',()=>{
   crop = { x:parseFloat(mCropBox.style.left)/dw, y:parseFloat(mCropBox.style.top)/dh, w:parseFloat(mCropBox.style.width)/dw, h:parseFloat(mCropBox.style.height)/dh };
   cropToggle.textContent='重新裁切';
   if($('keepRatio').checked){ $('height').value=Math.max(8,Math.min(200,Math.round((+$('width').value)*effRatio()))); $('hVal').textContent=$('height').value; }
-  closeModal(); generate();
+  closeModal(); generate(); saveSettings();
 });
 mCropCancel.addEventListener('click',closeModal);
 
 /* ============ 记忆上次设置 (localStorage) ============ */
 const LS_KEY='beandou_settings_v1';
+const PROJ_KEY='beandou_project_v1';
+/* 把源图压成缩略存本地，刷新后恢复项目图片 */
+function saveProjectImage(){
+  if(!img) return;
+  try{
+    const MAX=1024, s=Math.min(1, MAX/Math.max(imgW,imgH));
+    const cw=Math.max(1,Math.round(imgW*s)), ch=Math.max(1,Math.round(imgH*s));
+    const c=document.createElement('canvas'); c.width=cw; c.height=ch;
+    const cx=c.getContext('2d'); cx.fillStyle='#fff'; cx.fillRect(0,0,cw,ch);
+    cx.imageSmoothingEnabled=true; cx.imageSmoothingQuality='high';
+    cx.drawImage(img,0,0,imgW,imgH,0,0,cw,ch);
+    localStorage.setItem(PROJ_KEY, c.toDataURL('image/jpeg',0.85));
+  }catch(e){}
+}
 function saveSettings(){
   const data={
     pal:PAL, mardMode:MARD_MODE,
@@ -1567,7 +1596,8 @@ function saveSettings(){
     shape:$('shape').querySelector('.on').dataset.v,
     removeBg:$('removeBg').checked, dither:$('dither').checked,
     brightness:+$('brightness').value, contrast:+$('contrast').value, saturation:+$('saturation').value,
-    style:STYLE, styleAmount:+$('styleAmount').value
+    style:STYLE, styleAmount:+$('styleAmount').value,
+    crop: crop, bgColors: bgColors
   };
   try{ localStorage.setItem(LS_KEY, JSON.stringify(data)); }catch(e){}
 }
@@ -1606,8 +1636,27 @@ function restoreSettings(){
   }
   if(d.styleAmount!=null){ $('styleAmount').value=d.styleAmount; $('styleVal').textContent=d.styleAmount; }
   $('styleStrength').style.display = STYLE==='orig' ? 'none' : 'block';
+  if(d.crop){ crop=d.crop; cropToggle.textContent='重新裁切'; }
+  if(Array.isArray(d.bgColors)){ bgColors=d.bgColors; renderBgSwatches(); }
 }
 restoreSettings();
+/* 恢复上次项目图片（刷新后可继续上次的图，无需重新上传） */
+(function(){
+  let src=null; try{ src=localStorage.getItem(PROJ_KEY); }catch(e){}
+  if(!src) return;
+  const im=new Image();
+  im.onload=()=>{
+    img=im; imgW=im.naturalWidth||im.width; imgH=im.naturalHeight||im.height;
+    thumbImg.src=src; thumbMeta.textContent=`${imgW} × ${imgH} px`;
+    thumb.style.display='block';
+    $('cropActions').style.display='flex';
+    $('settingsCard').style.display='block';
+    renderBgSwatches();
+    generate(true);
+    if(isCoarse()) $('genBar').classList.add('show');
+  };
+  im.src=src;
+})();
 
 /* ============ 手机端：滚动到结果 + 结果画布捏合缩放 ============ */
 function isCoarse(){ return !!(window.matchMedia && window.matchMedia('(hover:none),(pointer:coarse)').matches); }
