@@ -109,6 +109,9 @@
   .bg-undo{padding:3px 9px;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer;font-size:11px;font-weight:600;color:var(--mut);transition:.12s}
   .bg-undo:hover{border-color:var(--pri);color:var(--pri)}
   .bg-hint{font-size:12px;color:var(--mut)}
+  .style-strength{margin-top:10px}
+  .style-strength label{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--mut);margin-bottom:4px}
+  .style-strength label .val{color:var(--pri);font-weight:800}
   /* 拾取背景色：左侧内嵌预览面板（不遮挡右侧图纸） */
   .pick-panel{border:1px solid var(--pri);border-radius:12px;background:#fff;margin-top:10px;overflow:hidden;box-shadow:0 4px 14px rgba(91,108,240,.14)}
   .pick-panel-head{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:var(--pri-soft)}
@@ -389,6 +392,20 @@
 
       <div class="row">
         <label class="check"><input type="checkbox" id="dither" checked> 抖动优化（照片渐变更细腻）</label>
+      </div>
+
+      <div class="row">
+        <label>风格</label>
+        <div class="seg" id="style">
+          <button data-v="orig" class="on">原图</button>
+          <button data-v="line">线稿</button>
+          <button data-v="sketch">素描</button>
+          <button data-v="cartoon">卡通</button>
+        </div>
+        <div class="style-strength" id="styleStrength" style="display:none">
+          <label>强度 <span class="val" id="styleVal">50</span></label>
+          <input type="range" id="styleAmount" min="0" max="100" value="50" step="1">
+        </div>
       </div>
 
       <div class="row">
@@ -709,6 +726,7 @@ let appliedGrid=null, appliedW=0, appliedH=0; // 已「应用」的正式网格�
 let showCode=true, showGrid=true;
 let bgColors=[]; // 手动拾取的背景色列表 [{r,g,b},...]，空=未拾取（退回四角自动检测）
 let crop=null; // 裁切区域 {x,y,w,h} 相对原图 0~1 比例, null=全图
+let STYLE='orig'; // 风格预处理：orig 原图 / line 线稿 / sketch 素描 / cartoon 卡通（强度实时读滑杆，见 #styleAmount）
 
 /* 当前有效源宽高比（裁切后按裁切区域算） */
 function effRatio(){
@@ -796,7 +814,10 @@ function generate(commit){
   } else {
     octx.drawImage(img,0,0,imgW,imgH,0,0,w,h);
   }
-  const data=octx.getImageData(0,0,w,h).data;
+  let data=octx.getImageData(0,0,w,h).data;
+
+  // 风格预处理（线稿/素描/卡通）：在匹配色号前先转换像素
+  if(STYLE && STYLE!=='orig') data=applyStyle(data, w, h, STYLE, +$('styleAmount').value);
 
   gridW=w; gridH=h;
   grid=new Array(w*h);
@@ -1334,6 +1355,91 @@ $('resetSize').addEventListener('click',()=>{ resetSliders(['width','height']); 
 $('resetColor').addEventListener('click',()=>{ resetSliders(['colorLimit']); generate(); });
 $('resetTone').addEventListener('click',()=>{ resetSliders(['brightness','contrast','saturation']); generate(); });
 
+/* ============ 风格预处理：线稿 / 素描 / 卡通 ============ */
+function boxBlurGray(g, w, h, r){
+  const tmp=new Float32Array(g.length), out=new Uint8ClampedArray(g.length);
+  for(let y=0;y<h;y++){ const row=y*w;
+    for(let x=0;x<w;x++){ let s=0,c=0;
+      for(let k=-r;k<=r;k++){ const xx=x+k; if(xx<0||xx>=w) continue; s+=g[row+xx]; c++; }
+      tmp[row+x]=s/c; } }
+  for(let y=0;y<h;y++){ for(let x=0;x<w;x++){ let s=0,c=0;
+      for(let k=-r;k<=r;k++){ const yy=y+k; if(yy<0||yy>=h) continue; s+=tmp[yy*w+x]; c++; }
+      out[y*w+x]=s/c; } }
+  return out;
+}
+function boxBlurRGB(data, w, h, r){
+  const n=w*h, tmp=new Float32Array(n*3), out=new Uint8ClampedArray(n*4);
+  for(let y=0;y<h;y++){ const row=y*w;
+    for(let x=0;x<w;x++){ let sr=0,sg=0,sb=0,c=0;
+      for(let k=-r;k<=r;k++){ const xx=x+k; if(xx<0||xx>=w) continue; const q=(row+xx)*4; sr+=data[q]; sg+=data[q+1]; sb+=data[q+2]; c++; }
+      const t=(row+x)*3; tmp[t]=sr/c; tmp[t+1]=sg/c; tmp[t+2]=sb/c; } }
+  for(let y=0;y<h;y++){ for(let x=0;x<w;x++){ let sr=0,sg=0,sb=0,c=0;
+      for(let k=-r;k<=r;k++){ const yy=y+k; if(yy<0||yy>=h) continue; const t=(yy*w+x)*3; sr+=tmp[t]; sg+=tmp[t+1]; sb+=tmp[t+2]; c++; }
+      const p=(y*w+x)*4; out[p]=sr/c; out[p+1]=sg/c; out[p+2]=sb/c; out[p+3]=data[p+3]; } }
+  return out;
+}
+function styleLine(data, w, h, amount){
+  const n=w*h, g=new Float32Array(n);
+  for(let i=0;i<n;i++){ const p=i*4; g[i]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2]; }
+  const thr=Math.max(20, 240 - amount*2.2); // 强度越大阈值越低→线条越多
+  const out=new Uint8ClampedArray(n*4);
+  for(let y=0;y<h;y++){ const ym=y>0?y-1:0, yp=y<h-1?y+1:h-1;
+    for(let x=0;x<w;x++){ const xm=x>0?x-1:0, xp=x<w-1?x+1:w-1;
+      const tl=g[ym*w+xm], tc=g[ym*w+x], tr=g[ym*w+xp];
+      const ml=g[y*w+xm], mr=g[y*w+xp];
+      const bl=g[yp*w+xm], bc=g[yp*w+x], br=g[yp*w+xp];
+      const gx=(tr+2*mr+br)-(tl+2*ml+bl);
+      const gy=(bl+2*bc+br)-(tl+2*tc+tr);
+      const mag=Math.sqrt(gx*gx+gy*gy);
+      const v=mag>thr?0:255;
+      const p=(y*w+x)*4; out[p]=out[p+1]=out[p+2]=v; out[p+3]=255;
+    } }
+  return out;
+}
+function styleSketch(data, w, h, amount){
+  const n=w*h, g=new Uint8ClampedArray(n);
+  for(let i=0;i<n;i++){ const p=i*4; g[i]=(0.299*data[p]+0.587*data[p+1]+0.114*data[p+2])|0; }
+  const r=Math.max(1, Math.round(1 + amount/40)); // 平滑半径 1..3
+  const blurred=boxBlurGray(g, w, h, r);
+  const sharpen=0.5 + amount/80; // 0.5..1.75 边缘增强，强度越大线条越重
+  const out=new Uint8ClampedArray(n*4);
+  for(let i=0;i<n;i++){
+    let v=g[i] + sharpen*(g[i]-blurred[i]);
+    if(v<0) v=0; else if(v>255) v=255;
+    const p=i*4; out[p]=out[p+1]=out[p+2]=v|0; out[p+3]=255;
+  }
+  return out;
+}
+function styleCartoon(data, w, h, amount){
+  const n=w*h;
+  const r=Math.max(1, Math.round(1 + amount/45)); // 平滑半径 1..3
+  const smooth=boxBlurRGB(data, w, h, r);
+  const levels=Math.max(2, Math.round(9 - amount/14)); // 平涂色阶 9..2
+  const q=255/(levels-1);
+  const out=new Uint8ClampedArray(n*4);
+  for(let i=0;i<n;i++){
+    const p=i*4;
+    out[p]=Math.round(smooth[p]/q)*q; out[p+1]=Math.round(smooth[p+1]/q)*q; out[p+2]=Math.round(smooth[p+2]/q)*q; out[p+3]=smooth[p+3];
+  }
+  return out;
+}
+function applyStyle(data, w, h, style, amount){
+  if(style==='line') return styleLine(data, w, h, amount);
+  if(style==='sketch') return styleSketch(data, w, h, amount);
+  if(style==='cartoon') return styleCartoon(data, w, h, amount);
+  return data;
+}
+$('style').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  $('style').querySelectorAll('button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');
+  STYLE=b.dataset.v;
+  $('styleStrength').style.display = STYLE==='orig' ? 'none' : 'block';
+  saveSettings();
+  if(img) generate();
+});
+$('styleAmount').addEventListener('input',()=>{ $('styleVal').textContent=$('styleAmount').value; schedulePreview(); });
+
 /* 工具栏：显示组（显示 ▾ 色号标注/网格线）+ 导出组（下载 ▾ 打印） */
 $('displayBtn').addEventListener('click',function(){ $('displayMenu').hidden=!$('displayMenu').hidden; });
 $('toggleCode').addEventListener('click',function(){
@@ -1437,7 +1543,8 @@ function saveSettings(){
     keepRatio:$('keepRatio').checked, colorLimit:+$('colorLimit').value,
     shape:$('shape').querySelector('.on').dataset.v,
     removeBg:$('removeBg').checked, dither:$('dither').checked,
-    brightness:+$('brightness').value, contrast:+$('contrast').value, saturation:+$('saturation').value
+    brightness:+$('brightness').value, contrast:+$('contrast').value, saturation:+$('saturation').value,
+    style:STYLE, styleAmount:+$('styleAmount').value
   };
   try{ localStorage.setItem(LS_KEY, JSON.stringify(data)); }catch(e){}
 }
@@ -1469,6 +1576,13 @@ function restoreSettings(){
   if(d.brightness!=null){ $('brightness').value=d.brightness; $('briVal').textContent=d.brightness; }
   if(d.contrast!=null){ $('contrast').value=d.contrast; $('conVal').textContent=d.contrast; }
   if(d.saturation!=null){ $('saturation').value=d.saturation; $('satVal').textContent=d.saturation; }
+  if(d.style && ['orig','line','sketch','cartoon'].includes(d.style)){
+    STYLE=d.style;
+    const b=$('style').querySelector(`[data-v="${d.style}"]`);
+    if(b){ $('style').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); }
+  }
+  if(d.styleAmount!=null){ $('styleAmount').value=d.styleAmount; $('styleVal').textContent=d.styleAmount; }
+  $('styleStrength').style.display = STYLE==='orig' ? 'none' : 'block';
 }
 restoreSettings();
 
