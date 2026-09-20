@@ -15,6 +15,11 @@
   header{background:linear-gradient(120deg,#4f5fe0,#7c5bf0);color:#fff;padding:20px 28px;box-shadow:0 2px 14px rgba(79,95,224,.25)}
   header h1{font-size:21px;font-weight:800;letter-spacing:.5px}
   header p{font-size:13px;opacity:.86;margin-top:4px}
+  header .privacy{font-size:11px;opacity:.68;margin-top:3px}
+  .setgroup{font-size:12px;font-weight:800;color:var(--mut);letter-spacing:.4px;margin:20px 0 12px;padding-top:16px;border-top:1px solid var(--line)}
+  .setgroup:first-of-type{margin-top:4px;padding-top:0;border-top:none}
+  .sample-link{display:block;margin:10px auto 0;background:none;border:none;color:var(--pri);font-size:12px;cursor:pointer;text-decoration:underline;font-family:inherit}
+  .sample-link:hover{color:var(--pri-2)}
   .wrap{max-width:1280px;margin:0 auto;padding:22px 20px 60px;display:grid;grid-template-columns:360px 1fr;gap:22px;align-items:start}
   .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px}
   .card + .card{margin-top:16px}
@@ -261,6 +266,7 @@
 <header>
   <h1>拼豆色号图生成器</h1>
   <p>上传任意图片 → 自动匹配 MARD / Artkal / Hama / Perler 真实色号 → 生成带色号的拼豆图纸</p>
+  <p class="privacy">图片全程在本地浏览器处理，不会上传到任何服务器</p>
 </header>
 
 <div class="wrap">
@@ -288,6 +294,7 @@
         <div class="s">或点击从电脑选择</div>
         <input type="file" id="file" accept="image/*">
       </div>
+      <button type="button" class="sample-link" id="sampleBtn">没有图片？点此用示例图体验</button>
       <div class="preview-thumb" id="thumb">
         <div class="crop-wrap" id="cropWrap">
           <img id="thumbImg" alt="原图预览">
@@ -313,6 +320,8 @@
 
     <div class="card" id="settingsCard" style="display:none">
       <h2><span class="step">3</span> 设置图纸</h2>
+
+      <div class="setgroup">图纸尺寸</div>
 
       <div class="row">
         <label>拼豆规格</label>
@@ -344,6 +353,8 @@
         <label class="check"><input type="checkbox" id="keepRatio" checked> 保持原图比例（宽高联动）</label>
       </div>
 
+      <div class="setgroup">颜色与形状</div>
+
       <div class="row">
         <div class="row-head">
           <label>颜色数量 <span class="val" id="colorVal">不限</span></label>
@@ -363,6 +374,42 @@
           <button data-v="hex">六边形</button>
         </div>
       </div>
+
+      <div class="setgroup">风格与调色</div>
+
+      <div class="row">
+        <label>风格</label>
+        <div class="seg" id="style">
+          <button data-v="orig" class="on">原图</button>
+          <button data-v="line">线稿</button>
+          <button data-v="sketch">素描</button>
+          <button data-v="cartoon">卡通</button>
+        </div>
+        <div class="style-strength" id="styleStrength" style="display:none">
+          <label>强度 <span class="val" id="styleVal">50</span></label>
+          <input type="range" id="styleAmount" min="0" max="100" value="50" step="1">
+        </div>
+      </div>
+
+      <div class="row">
+        <label>调色 · 亮度 <span class="val" id="briVal">0</span></label>
+        <input type="range" id="brightness" min="-100" max="100" value="0" step="1">
+      </div>
+      <div class="row">
+        <label>调色 · 对比度 <span class="val" id="conVal">0</span></label>
+        <input type="range" id="contrast" min="-100" max="100" value="0" step="1">
+      </div>
+      <div class="row">
+        <div class="row-head">
+          <label>调色 · 饱和度 <span class="val" id="satVal">0</span></label>
+          <div class="row-actions">
+            <button class="btn ghost reset" id="resetTone" type="button">恢复默认</button>
+          </div>
+        </div>
+        <input type="range" id="saturation" min="-100" max="100" value="0" step="1">
+      </div>
+
+      <div class="setgroup">背景处理</div>
 
       <div class="row">
         <label class="check"><input type="checkbox" id="removeBg"> 去除纯色背景（背景格不计入）</label>
@@ -395,38 +442,6 @@
 
       <div class="row">
         <label class="check"><input type="checkbox" id="dither" checked> 抖动优化（照片渐变更细腻）</label>
-      </div>
-
-      <div class="row">
-        <label>风格</label>
-        <div class="seg" id="style">
-          <button data-v="orig" class="on">原图</button>
-          <button data-v="line">线稿</button>
-          <button data-v="sketch">素描</button>
-          <button data-v="cartoon">卡通</button>
-        </div>
-        <div class="style-strength" id="styleStrength" style="display:none">
-          <label>强度 <span class="val" id="styleVal">50</span></label>
-          <input type="range" id="styleAmount" min="0" max="100" value="50" step="1">
-        </div>
-      </div>
-
-      <div class="row">
-        <label>调色 · 亮度 <span class="val" id="briVal">0</span></label>
-        <input type="range" id="brightness" min="-100" max="100" value="0" step="1">
-      </div>
-      <div class="row">
-        <label>调色 · 对比度 <span class="val" id="conVal">0</span></label>
-        <input type="range" id="contrast" min="-100" max="100" value="0" step="1">
-      </div>
-      <div class="row">
-        <div class="row-head">
-          <label>调色 · 饱和度 <span class="val" id="satVal">0</span></label>
-          <div class="row-actions">
-            <button class="btn ghost reset" id="resetTone" type="button">恢复默认</button>
-          </div>
-        </div>
-        <input type="range" id="saturation" min="-100" max="100" value="0" step="1">
       </div>
 
       <div class="export-bar" id="exportBar" style="display:none">
@@ -485,8 +500,8 @@
 </div>
 
   <div class="mobile-genbar" id="genBar">
-    <div class="gmeta" id="genMeta">上传图片后，点此生成图纸</div>
-    <button class="gbtn" id="genBarBtn" type="button">生成图纸</button>
+    <div class="gmeta" id="genMeta">上传图片后，自动生成图纸</div>
+    <button class="gbtn" id="genBarBtn" type="button">查看图纸</button>
     <button class="gbtn ghost" id="genBarDownload" type="button">下载</button>
   </div>
 
@@ -1012,6 +1027,12 @@ function paletteLabel(){
   if(PAL==='mard') return `MARD 漫得 · ${MARD_MODE} 色`;
   return `${PALETTES[PAL].name} · ${PALETTES[PAL].count} 色`;
 }
+/* 导出文件名标签：品牌-色数 + 豆径 */
+function fileTag(){
+  const bead=$('beadSize').querySelector('.on').dataset.v;
+  const brand=PAL==='mard' ? `MARD${MARD_MODE}` : PAL.toUpperCase();
+  return `${brand}_${bead}mm`;
+}
 /* 今天日期 YYYY-MM-DD，用于导出标题 */
 function todayStr(){
   const d=new Date();
@@ -1082,7 +1103,7 @@ function exportPng(){
   });
 
   const a=document.createElement('a');
-  a.download=`拼豆色号图_${w}x${h}.png`;
+  a.download=`拼豆色号图_${fileTag()}_${w}x${h}.png`;
   a.href=c.toDataURL('image/png');
   a.click();
   });
@@ -1094,7 +1115,7 @@ function exportPngPlain(){
   const w=gridW,h=gridH; if(!w) return;
   const board=renderBoard(30,8,false);
   const a=document.createElement('a');
-  a.download=`拼豆色号图_${w}x${h}_纯色块.png`;
+  a.download=`拼豆色号图_${fileTag()}_${w}x${h}_纯色块.png`;
   a.href=board.toDataURL('image/png');
   a.click();
   });
@@ -1115,7 +1136,7 @@ function exportCsv(){
   const csv='﻿'+lines.join('\r\n');
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
   const a=document.createElement('a');
-  a.download=`拼豆色号矩阵_${w}x${h}.csv`;
+  a.download=`拼豆色号矩阵_${fileTag()}_${w}x${h}.csv`;
   a.href=URL.createObjectURL(blob);
   a.click();
   URL.revokeObjectURL(a.href);
@@ -1136,7 +1157,7 @@ function exportShopList(){
   const csv='﻿'+lines.join('\r\n');
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
   const a=document.createElement('a');
-  a.download=`拼豆购物清单_${w}x${h}.csv`;
+  a.download=`拼豆购物清单_${fileTag()}_${w}x${h}.csv`;
   a.href=URL.createObjectURL(blob);
   a.click();
   URL.revokeObjectURL(a.href);
@@ -1149,6 +1170,20 @@ drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('over
 drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
 drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over');const f=e.dataTransfer.files[0];if(f)loadFile(f);});
 file.addEventListener('change',()=>{if(file.files[0])loadFile(file.files[0]);});
+$('sampleBtn').addEventListener('click',loadSample);
+
+/* 示例图：生成一张扁平卡通蘑菇，便于首次体验 */
+function loadSample(){
+  const c=document.createElement('canvas'); c.width=200; c.height=200;
+  const x=c.getContext('2d');
+  x.fillStyle='#cde6ff'; x.fillRect(0,0,200,200);
+  x.fillStyle='#7ccb6a'; x.fillRect(0,150,200,50);
+  x.fillStyle='#f4e2c4'; x.fillRect(85,115,30,55);
+  x.fillStyle='#e0483e'; x.beginPath(); x.arc(100,105,55,Math.PI,0); x.closePath(); x.fill();
+  x.fillStyle='#ffffff';
+  [[75,80],[100,68],[125,85],[90,95]].forEach(p=>{ x.beginPath(); x.arc(p[0],p[1],6,0,Math.PI*2); x.fill(); });
+  c.toBlob(b=>{ if(b) loadFile(new File([b],'示例.png',{type:'image/png'})); },'image/png');
+}
 
 function loadFile(f){
   if(!/^image\//.test(f.type)){ alert('请选择图片文件'); return; }
@@ -1738,7 +1773,7 @@ function initStageZoom(){
   });
   window.__resetZoom=function(){ scale=1; tx=0; ty=0; apply(); };
 }
-$('genBarBtn').addEventListener('click',()=>{ generate(); scrollToResult(); });
+$('genBarBtn').addEventListener('click',()=>{ scrollToResult(); });
 $('genBarDownload').addEventListener('click',()=>{ if(!img) return; exportPng(); });
 initStageZoom();
 
