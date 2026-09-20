@@ -801,7 +801,7 @@ function generate(commit){
   const limit=+$('colorLimit').value;
   const shape=$('shape').querySelector('.on').dataset.v;
   const removeBg=$('removeBg').checked;
-  const dither=$('dither').checked;
+  const dither = STYLE==='orig' && $('dither').checked; // 手绘风格（线稿/素描/卡通）需要平涂清晰，自动关闭抖动
   const bri=+$('brightness').value, con=+$('contrast').value, sat=+$('saturation').value;
 
   // 采样：把原图（或裁切区域）缩到 w×h
@@ -1381,19 +1381,21 @@ function boxBlurRGB(data, w, h, r){
 function styleLine(data, w, h, amount){
   const n=w*h, g=new Float32Array(n);
   for(let i=0;i<n;i++){ const p=i*4; g[i]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2]; }
-  const thr=Math.max(20, 240 - amount*2.2); // 强度越大阈值越低→线条越多
-  const out=new Uint8ClampedArray(n*4);
+  const sm=boxBlurGray(g, w, h, 1); // 先轻微平滑去噪，线条更连贯
+  // 先求梯度幅值与全局最大值，用自适应阈值：任何照片都能稳定出线
+  const mag=new Float32Array(n); let maxM=0;
   for(let y=0;y<h;y++){ const ym=y>0?y-1:0, yp=y<h-1?y+1:h-1;
     for(let x=0;x<w;x++){ const xm=x>0?x-1:0, xp=x<w-1?x+1:w-1;
-      const tl=g[ym*w+xm], tc=g[ym*w+x], tr=g[ym*w+xp];
-      const ml=g[y*w+xm], mr=g[y*w+xp];
-      const bl=g[yp*w+xm], bc=g[yp*w+x], br=g[yp*w+xp];
+      const tl=sm[ym*w+xm], tc=sm[ym*w+x], tr=sm[ym*w+xp];
+      const ml=sm[y*w+xm], mr=sm[y*w+xp];
+      const bl=sm[yp*w+xm], bc=sm[yp*w+x], br=sm[yp*w+xp];
       const gx=(tr+2*mr+br)-(tl+2*ml+bl);
       const gy=(bl+2*bc+br)-(tl+2*tc+tr);
-      const mag=Math.sqrt(gx*gx+gy*gy);
-      const v=mag>thr?0:255;
-      const p=(y*w+x)*4; out[p]=out[p+1]=out[p+2]=v; out[p+3]=255;
+      const m=Math.sqrt(gx*gx+gy*gy); mag[y*w+x]=m; if(m>maxM)maxM=m;
     } }
+  const thr=maxM>0 ? maxM*(0.40 - amount*0.0036) : Infinity; // 强度↑阈值↓→线越多
+  const out=new Uint8ClampedArray(n*4);
+  for(let i=0;i<n;i++){ const v=mag[i]>=thr?0:255; const p=i*4; out[p]=out[p+1]=out[p+2]=v; out[p+3]=255; }
   return out;
 }
 function styleSketch(data, w, h, amount){
@@ -1401,26 +1403,47 @@ function styleSketch(data, w, h, amount){
   for(let i=0;i<n;i++){ const p=i*4; g[i]=(0.299*data[p]+0.587*data[p+1]+0.114*data[p+2])|0; }
   const r=Math.max(1, Math.round(1 + amount/40)); // 平滑半径 1..3
   const blurred=boxBlurGray(g, w, h, r);
-  const sharpen=0.5 + amount/80; // 0.5..1.75 边缘增强，强度越大线条越重
+  const k=1.5 + amount/18; // 边缘增强 1.5..7，越大线条越重
+  const levels=Math.max(6, Math.round(20 - amount/8)); // 灰阶量化 20..7，形成铅笔明暗层次
+  const q=255/(levels-1);
   const out=new Uint8ClampedArray(n*4);
   for(let i=0;i<n;i++){
-    let v=g[i] + sharpen*(g[i]-blurred[i]);
-    if(v<0) v=0; else if(v>255) v=255;
-    const p=i*4; out[p]=out[p+1]=out[p+2]=v|0; out[p+3]=255;
+    let v=g[i] + k*(g[i]-blurred[i]); // 反锐化：轮廓/纹理更黑
+    if(v<0)v=0; else if(v>255)v=255;
+    v=Math.round(v/q)*q;
+    const p=i*4; out[p]=out[p+1]=out[p+2]=v; out[p+3]=255;
   }
   return out;
 }
 function styleCartoon(data, w, h, amount){
   const n=w*h;
-  const r=Math.max(1, Math.round(1 + amount/45)); // 平滑半径 1..3
+  const r=Math.max(1, Math.round(1 + amount/40)); // 平滑半径 1..3
   const smooth=boxBlurRGB(data, w, h, r);
-  const levels=Math.max(2, Math.round(9 - amount/14)); // 平涂色阶 9..2
+  const levels=Math.max(3, Math.round(6 - amount/25)); // 平涂色阶 6..3
   const q=255/(levels-1);
   const out=new Uint8ClampedArray(n*4);
   for(let i=0;i<n;i++){
     const p=i*4;
-    out[p]=Math.round(smooth[p]/q)*q; out[p+1]=Math.round(smooth[p+1]/q)*q; out[p+2]=Math.round(smooth[p+2]/q)*q; out[p+3]=smooth[p+3];
+    let R=Math.round(smooth[p]/q)*q, G=Math.round(smooth[p+1]/q)*q, B=Math.round(smooth[p+2]/q)*q;
+    const gray=0.299*R+0.587*G+0.114*B, sat=1.45; // 提饱和让颜色更鲜明
+    R=gray+(R-gray)*sat; G=gray+(G-gray)*sat; B=gray+(B-gray)*sat;
+    R=R<0?0:(R>255?255:R); G=G<0?0:(G>255?255:G); B=B<0?0:(B>255?255:B);
+    out[p]=R; out[p+1]=G; out[p+2]=B; out[p+3]=smooth[p+3];
   }
+  // 黑色粗轮廓：对平涂结果做 Sobel，边缘画近黑，形成「色块平涂+黑描边」的扁平卡通感
+  const gray=new Float32Array(n);
+  for(let i=0;i<n;i++){ const p=i*4; gray[i]=0.299*out[p]+0.587*out[p+1]+0.114*out[p+2]; }
+  const lineT=Math.max(10, 50 - amount*0.4); // 强度↑轮廓越多
+  for(let y=0;y<h;y++){ const ym=y>0?y-1:0, yp=y<h-1?y+1:h-1;
+    for(let x=0;x<w;x++){ const xm=x>0?x-1:0, xp=x<w-1?x+1:w-1;
+      const tl=gray[ym*w+xm], tc=gray[ym*w+x], tr=gray[ym*w+xp];
+      const ml=gray[y*w+xm], mr=gray[y*w+xp];
+      const bl=gray[yp*w+xm], bc=gray[yp*w+x], br=gray[yp*w+xp];
+      const gx=(tr+2*mr+br)-(tl+2*ml+bl);
+      const gy=(bl+2*bc+br)-(tl+2*tc+tr);
+      const m=Math.sqrt(gx*gx+gy*gy);
+      if(m>lineT){ const p=(y*w+x)*4; out[p]=25; out[p+1]=25; out[p+2]=25; }
+    } }
   return out;
 }
 function applyStyle(data, w, h, style, amount){
