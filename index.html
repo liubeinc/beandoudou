@@ -773,6 +773,7 @@ let showCode=true, showGrid=true;
 let bgColors=[]; // 手动拾取的背景色列表 [{r,g,b},...]，空=未拾取（退回四角自动检测）
 let crop=null; // 裁切区域 {x,y,w,h} 相对原图 0~1 比例, null=全图
 let STYLE='orig'; // 风格预处理：orig 原图 / line 线稿 / sketch 素描 / cartoon 卡通（强度实时读滑杆，见 #styleAmount）
+let previewPending=false, previewRAF=0; // 拖拽预览节流（低清渲染）状态
 
 /* 当前有效源宽高比（裁切后按裁切区域算） */
 function effRatio(){
@@ -839,8 +840,9 @@ function adjust(r,g,b,bri,con,sat){
   return [Math.max(0,Math.min(255,r)),Math.max(0,Math.min(255,g)),Math.max(0,Math.min(255,b))];
 }
 
-function generate(commit){
+function generate(commit, lowRes){
   if(!img) return;
+  if(!lowRes && previewRAF){ cancelAnimationFrame(previewRAF); previewRAF=0; previewPending=false; }
   if(commit!==false && window.__resetZoom) window.__resetZoom();
   const w=+$('width').value, h=+$('height').value;
   const keep=$('keepRatio').checked;
@@ -914,7 +916,7 @@ function generate(commit){
   // 形状裁切（置空形状外格）
   for(let y=0;y<h;y++) for(let x=0;x<w;x++){ if(!shapeKeep(x,y,w,h,shape)) grid[y*w+x]=-1; }
 
-  draw();
+  draw(lowRes);
   buildStats();
   updateDims(w,h);
   $('toolbar').style.display='flex';
@@ -933,10 +935,11 @@ function useApplied(fn){
 }
 
 /* ============ 绘制 ============ */
-function draw(){
+function draw(preview){
   const w=gridW, h=gridH; if(!w) return;
-  const cell=36; // 每格像素
-  const pad=28; // 边距（放坐标刻度）
+  // 拖拽预览用低清格子（8px），大幅减少画布像素并跳过文本/网格线；松手后全清 36px 出图
+  const cell = preview ? 8 : 36;
+  const pad = preview ? 2 : 28;
   const cw=pad*2+w*cell, ch=pad*2+h*cell;
   canvas.width=cw; canvas.height=ch;
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,cw,ch);
@@ -954,6 +957,7 @@ function draw(){
     ctx.fillStyle=hex;
     for(let i=0;i<arr.length;i+=2) ctx.fillRect(arr[i], arr[i+1], cell, cell);
   }
+  if(preview) return; // 低清预览到此为止（网格线/色号标注/坐标刻度留到全清出图）
   // 网格线
   if(showGrid){
     ctx.strokeStyle='rgba(120,128,140,.28)'; ctx.lineWidth=1;
@@ -1292,17 +1296,21 @@ $('shape').addEventListener('click',e=>{
   b.classList.add('on');
   generate();
 });
-/* 滑块拖动：实时预览（rAF 节流避免卡顿），所见即所得，导出基于当前图 */
-let previewPending=false;
-function schedulePreview(){
+/* 滑块拖动：实时低清预览（rAF 节流）；松手后立即全清出图。所见即所得，导出基于当前图 */
+function schedulePreview(lowRes){
   if(!img) return;
+  if(!lowRes){
+    if(previewRAF){ cancelAnimationFrame(previewRAF); previewRAF=0; previewPending=false; }
+    generate(false, false); // 松手：取消待渲染低清帧，立即全清
+    return;
+  }
   if(previewPending) return;
   previewPending=true;
-  requestAnimationFrame(()=>{ previewPending=false; generate(false); });
+  previewRAF=requestAnimationFrame(()=>{ previewPending=false; previewRAF=0; generate(false, true); });
 }
 function bindRange(id, valId, fmt, onLive){
-  $(id).addEventListener('input',()=>{ $(valId).textContent=fmt(+$(id).value); if(onLive) onLive(); });
-  if(onLive) $(id).addEventListener('change',onLive);
+  $(id).addEventListener('input',()=>{ $(valId).textContent=fmt(+$(id).value); if(onLive) onLive(true); });
+  if(onLive) $(id).addEventListener('change',()=>onLive(false));
 }
 /* 按原图比例双向联动：fromW=true 改宽同步高, false 改高同步宽 */
 function syncRatio(fromW){
@@ -1315,18 +1323,18 @@ function syncRatio(fromW){
     $('wVal').textContent=$('width').value;
   }
 }
-bindRange('width','wVal',v=>v,()=>{
+bindRange('width','wVal',v=>v,lowRes=>{
   if($('keepRatio').checked && img) syncRatio(true);
-  schedulePreview();
+  schedulePreview(lowRes);
 });
-bindRange('height','hVal',v=>v,()=>{
+bindRange('height','hVal',v=>v,lowRes=>{
   if($('keepRatio').checked && img) syncRatio(false);
-  schedulePreview();
+  schedulePreview(lowRes);
 });
-bindRange('colorLimit','colorVal',v=>v>=48?'不限':v,()=>schedulePreview());
-bindRange('brightness','briVal',v=>v,()=>schedulePreview());
-bindRange('contrast','conVal',v=>v,()=>schedulePreview());
-bindRange('saturation','satVal',v=>v,()=>schedulePreview());
+bindRange('colorLimit','colorVal',v=>v>=48?'不限':v,lowRes=>schedulePreview(lowRes));
+bindRange('brightness','briVal',v=>v,lowRes=>schedulePreview(lowRes));
+bindRange('contrast','conVal',v=>v,lowRes=>schedulePreview(lowRes));
+bindRange('saturation','satVal',v=>v,lowRes=>schedulePreview(lowRes));
 $('keepRatio').addEventListener('change',()=>{ if($('keepRatio').checked && img) syncRatio(true); });
 $('removeBg').addEventListener('change',()=>{
   $('bgPick').style.display = $('removeBg').checked ? 'flex' : 'none';
@@ -1537,7 +1545,8 @@ $('style').addEventListener('click',e=>{
   saveSettings();
   if(img) generate();
 });
-$('styleAmount').addEventListener('input',()=>{ $('styleVal').textContent=$('styleAmount').value; schedulePreview(); });
+$('styleAmount').addEventListener('input',()=>{ $('styleVal').textContent=$('styleAmount').value; schedulePreview(true); });
+$('styleAmount').addEventListener('change',()=>schedulePreview(false));
 
 /* 工具栏：显示组（显示 ▾ 色号标注/网格线）+ 导出组（下载 ▾ 打印） */
 $('displayBtn').addEventListener('click',function(){ $('displayMenu').hidden=!$('displayMenu').hidden; });
