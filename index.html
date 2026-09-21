@@ -1523,23 +1523,25 @@ function styleSketch(data, w, h, amount){
 }
 function styleCartoon(data, w, h, amount){
   const n=w*h;
-  const r=Math.max(1, Math.round(1 + amount/40)); // 平滑半径 1..3
+  // 1) 强平滑：抹平照片纹理/噪点，半径随图幅自适应（小图 1、大图约 2~4），避免小图过度糊边
+  const r=Math.max(1, Math.round(Math.min(w,h)*(0.010 + amount*0.00010)));
   const smooth=boxBlurRGB(data, w, h, r);
-  const levels=Math.max(3, Math.round(6 - amount/25)); // 平涂色阶 6..3
+  // 2) 平涂量化 + 提饱和（通道色阶 5..3，强度越高越平；下限 3 避免把深色区量化成纯黑）
+  const levels=Math.max(3, Math.round(5 - amount*0.02));
   const q=255/(levels-1);
   const out=new Uint8ClampedArray(n*4);
   for(let i=0;i<n;i++){
     const p=i*4;
     let R=Math.round(smooth[p]/q)*q, G=Math.round(smooth[p+1]/q)*q, B=Math.round(smooth[p+2]/q)*q;
-    const gray=0.299*R+0.587*G+0.114*B, sat=1.45; // 提饱和让颜色更鲜明
+    const gray=0.299*R+0.587*G+0.114*B, sat=1.35; // 提饱和让颜色更鲜明
     R=gray+(R-gray)*sat; G=gray+(G-gray)*sat; B=gray+(B-gray)*sat;
     R=R<0?0:(R>255?255:R); G=G<0?0:(G>255?255:G); B=B<0?0:(B>255?255:B);
     out[p]=R; out[p+1]=G; out[p+2]=B; out[p+3]=smooth[p+3];
   }
-  // 黑色粗轮廓：对平涂结果做 Sobel，边缘画近黑，形成「色块平涂+黑描边」的扁平卡通感
+  // 3) 黑色粗轮廓：对「平滑后亮度」做 Sobel（而非平涂结果），只勾勒真实物体边界、不描色阶，避免噪点
   const gray=new Float32Array(n);
-  for(let i=0;i<n;i++){ const p=i*4; gray[i]=0.299*out[p]+0.587*out[p+1]+0.114*out[p+2]; }
-  const lineT=Math.max(10, 50 - amount*0.4); // 强度↑轮廓越多
+  for(let i=0;i<n;i++){ const p=i*4; gray[i]=0.299*smooth[p]+0.587*smooth[p+1]+0.114*smooth[p+2]; }
+  const mag=new Float32Array(n); let maxM=0;
   for(let y=0;y<h;y++){ const ym=y>0?y-1:0, yp=y<h-1?y+1:h-1;
     for(let x=0;x<w;x++){ const xm=x>0?x-1:0, xp=x<w-1?x+1:w-1;
       const tl=gray[ym*w+xm], tc=gray[ym*w+x], tr=gray[ym*w+xp];
@@ -1547,9 +1549,10 @@ function styleCartoon(data, w, h, amount){
       const bl=gray[yp*w+xm], bc=gray[yp*w+x], br=gray[yp*w+xp];
       const gx=(tr+2*mr+br)-(tl+2*ml+bl);
       const gy=(bl+2*bc+br)-(tl+2*tc+tr);
-      const m=Math.sqrt(gx*gx+gy*gy);
-      if(m>lineT){ const p=(y*w+x)*4; out[p]=25; out[p+1]=25; out[p+2]=25; }
+      const m=Math.sqrt(gx*gx+gy*gy); mag[y*w+x]=m; if(m>maxM)maxM=m;
     } }
+  const thr=Math.max(6, maxM*(0.16 - amount*0.0008)); // 自适应阈值（0.16→0.08），强度↑轮廓越多，但始终在安全区间
+  for(let i=0;i<n;i++){ if(mag[i]>=thr){ const p=i*4; out[p]=25; out[p+1]=25; out[p+2]=25; } }
   return out;
 }
 function applyStyle(data, w, h, style, amount){
