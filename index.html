@@ -1564,6 +1564,8 @@ $('style').addEventListener('click',e=>{
   b.classList.add('on');
   STYLE=b.dataset.v;
   $('styleStrength').style.display = STYLE==='orig' ? 'none' : 'block';
+  // 转换风格后默认预览「风格原图」（未匹配色号），方便看风格效果；选回「原图」则回到图纸
+  setOriginalView(STYLE!=='orig');
   saveSettings();
   if(img) generate();
 });
@@ -1572,11 +1574,14 @@ $('styleAmount').addEventListener('change',()=>schedulePreview(false));
 
 /* 工具栏：显示组（显示 ▾ 色号标注/网格线）+ 导出组（下载 ▾ 打印） */
 $('displayBtn').addEventListener('click',function(){ $('displayMenu').hidden=!$('displayMenu').hidden; });
+function setOriginalView(on){
+  viewOriginal=on;
+  const b=$('toggleOriginal');
+  if(b){ b.classList.toggle('on',on); b.textContent = on ? '返回图纸' : '原图对照'; }
+}
 $('toggleOriginal').addEventListener('click',function(){
   if(!img) return;
-  viewOriginal=!viewOriginal;
-  this.classList.toggle('on',viewOriginal);
-  this.textContent = viewOriginal ? '返回图纸' : '原图对照';
+  setOriginalView(!viewOriginal);
   renderPreview(false);
 });
 $('toggleCode').addEventListener('click',function(){
