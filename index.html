@@ -468,6 +468,7 @@
       <div class="preview-head">
         <div class="dims">图纸尺寸 <b id="dimsText">—</b> · 约 <b id="sizeText">—</b> <span class="bead-total" id="beadTotal" style="display:none">共需 <b id="totalBeads">0</b> 颗豆子</span></div>
         <div class="toolbar" id="toolbar" style="display:none">
+          <button id="toggleOriginal">原图对照</button>
           <div class="split-group">
             <button id="displayBtn"><span class="lbl">显示</span><span class="caret">▾</span></button>
             <div class="submenu" id="displayMenu" hidden>
@@ -774,6 +775,8 @@ let bgColors=[]; // 手动拾取的背景色列表 [{r,g,b},...]，空=未拾取
 let crop=null; // 裁切区域 {x,y,w,h} 相对原图 0~1 比例, null=全图
 let STYLE='orig'; // 风格预处理：orig 原图 / line 线稿 / sketch 素描 / cartoon 卡通（强度实时读滑杆，见 #styleAmount）
 let previewPending=false, previewRAF=0; // 拖拽预览节流（低清渲染）状态
+let sourceData=null;    // 当前生成所用「采样+风格后」原始像素（w×h RGBA），用于原图对照
+let viewOriginal=false; // true=预览显示原图（未匹配色号），false=显示拼豆图纸
 
 /* 当前有效源宽高比（裁切后按裁切区域算） */
 function effRatio(){
@@ -866,6 +869,7 @@ function generate(commit, lowRes){
 
   // 风格预处理（线稿/素描/卡通）：在匹配色号前先转换像素
   if(STYLE && STYLE!=='orig') data=applyStyle(data, w, h, STYLE, +$('styleAmount').value);
+  sourceData = data; // 留存「采样+风格后」原图像素，供原图对照
 
   gridW=w; gridH=h;
   grid=new Array(w*h);
@@ -916,7 +920,7 @@ function generate(commit, lowRes){
   // 形状裁切（置空形状外格）
   for(let y=0;y<h;y++) for(let x=0;x<w;x++){ if(!shapeKeep(x,y,w,h,shape)) grid[y*w+x]=-1; }
 
-  draw(lowRes);
+  renderPreview(lowRes);
   buildStats();
   updateDims(w,h);
   $('toolbar').style.display='flex';
@@ -984,6 +988,24 @@ function draw(preview){
   ctx.textAlign='center'; ctx.textBaseline='middle';
   for(let x=0;x<w;x++){ if(x%5===0) ctx.fillText(String(x+1), pad+x*cell+cell/2, pad-12); }
   for(let y=0;y<h;y++){ if(y%5===0) ctx.fillText(String(y+1), pad-14, pad+y*cell+cell/2); }
+}
+
+/* 原图对照：把「采样+风格后」的原始像素（未匹配色号）放大到拼豆格分辨率，便于对照相似性 */
+function drawOriginal(){
+  const w=gridW, h=gridH; if(!w || !sourceData) return;
+  const cell=36, pad=28;
+  const cw=pad*2+w*cell, ch=pad*2+h*cell;
+  canvas.width=cw; canvas.height=ch;
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,cw,ch);
+  const off=document.createElement('canvas'); off.width=w; off.height=h;
+  off.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(sourceData), w, h), 0, 0);
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(off, pad, pad, w*cell, h*cell);
+}
+/* 预览渲染入口：原图对照模式显示原图，否则显示拼豆图纸 */
+function renderPreview(lowRes){
+  if(viewOriginal) drawOriginal();
+  else draw(lowRes);
 }
 
 /* ============ 统计 ============ */
@@ -1550,12 +1572,19 @@ $('styleAmount').addEventListener('change',()=>schedulePreview(false));
 
 /* 工具栏：显示组（显示 ▾ 色号标注/网格线）+ 导出组（下载 ▾ 打印） */
 $('displayBtn').addEventListener('click',function(){ $('displayMenu').hidden=!$('displayMenu').hidden; });
+$('toggleOriginal').addEventListener('click',function(){
+  if(!img) return;
+  viewOriginal=!viewOriginal;
+  this.classList.toggle('on',viewOriginal);
+  this.textContent = viewOriginal ? '返回图纸' : '原图对照';
+  renderPreview(false);
+});
 $('toggleCode').addEventListener('click',function(){
-  showCode=!showCode; this.classList.toggle('on',showCode); draw();
+  showCode=!showCode; this.classList.toggle('on',showCode); renderPreview(false);
   $('displayMenu').hidden=true;
 });
 $('toggleGrid').addEventListener('click',function(){
-  showGrid=!showGrid; this.classList.toggle('on',showGrid); draw();
+  showGrid=!showGrid; this.classList.toggle('on',showGrid); renderPreview(false);
   $('displayMenu').hidden=true;
 });
 $('downloadBtn').addEventListener('click',()=>{ if(img) exportPng(); });
