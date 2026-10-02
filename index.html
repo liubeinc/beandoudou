@@ -93,7 +93,7 @@
   .seg button:hover{border-color:var(--pri-2)}
   .seg button:active{background:#eef0fe}
   .seg button.on{border-color:var(--pri);background:var(--pri-soft);color:var(--pri);box-shadow:0 0 0 3px rgba(91,108,240,.12)}
-  input[type=range]{width:100%;height:26px;-webkit-appearance:none;appearance:none;background:transparent;cursor:pointer;touch-action:none}
+  input[type=range]{width:100%;height:26px;-webkit-appearance:none;appearance:none;background:transparent;cursor:pointer;touch-action:pan-y}
   html,body{overscroll-behavior-x:none;touch-action:manipulation}
   input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px;background:linear-gradient(90deg,#d7dcee,#e3e6f2)}
   input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;margin-top:-5px;border-radius:50%;background:#fff;border:2px solid var(--pri);box-shadow:0 1px 4px rgba(28,40,58,.2);transition:.12s}
@@ -1884,6 +1884,30 @@ $('colorHint').addEventListener('click',e=>{
   const act=b.dataset.act;
   if(act==='removebg'){ $('removeBg').checked=true; $('bgPick').style.display='flex'; renderBgSwatches(); generate(); }
   else if(act==='limit8'){ $('colorLimit').value=8; $('colorVal').textContent='8'; generate(); }
+});
+
+/* 移动端防误触：手指落在滑杆上开始上下滑动时，让浏览器接管翻页滚动；若滑动过程顺带改动了滑杆值则恢复原值 */
+document.querySelectorAll('input[type=range]').forEach(el=>{
+  let st=null, lastDx=0;
+  el.addEventListener('touchstart',e=>{
+    if(e.touches.length===1){ st={x:e.touches[0].clientX,y:e.touches[0].clientY,val:el.value}; lastDx=0; }
+    else st=null;
+  },{passive:true});
+  el.addEventListener('touchmove',e=>{
+    if(!st) return;
+    const t=e.touches[0];
+    const dx=Math.abs(t.clientX-st.x), dy=Math.abs(t.clientY-st.y);
+    lastDx=dx;
+    if(dy>8 && dy>dx){ // 判定为纵向滑动（翻页），恢复被顺带改动的值
+      if(dx<12 && el.value!==st.val){ el.value=st.val; el.dispatchEvent(new Event('input',{bubbles:true})); }
+      st=null;
+    }
+  },{passive:true});
+  el.addEventListener('touchcancel',()=>{ // 浏览器接管滚动，恢复被顺带改动的值
+    if(st && lastDx<12 && el.value!==st.val){ el.value=st.val; el.dispatchEvent(new Event('input',{bubbles:true})); }
+    st=null;
+  },{passive:true});
+  el.addEventListener('touchend',()=>{ st=null; },{passive:true});
 });
 
 // 任意设置变化都保存（change 捕获 checkbox/select/range 松手; click 捕获按钮切换; input 捕获 range 拖动）
