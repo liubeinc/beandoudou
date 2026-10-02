@@ -93,6 +93,7 @@
   .seg button:hover{border-color:var(--pri-2)}
   .seg button:active{background:#eef0fe}
   .seg button.on{border-color:var(--pri);background:var(--pri-soft);color:var(--pri);box-shadow:0 0 0 3px rgba(91,108,240,.12)}
+  #style{display:grid;grid-template-columns:repeat(4,1fr)}
   input[type=range]{width:100%;height:26px;-webkit-appearance:none;appearance:none;background:transparent;cursor:pointer;touch-action:pan-y}
   html,body{overscroll-behavior-x:none;touch-action:manipulation}
   input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px;background:linear-gradient(90deg,#d7dcee,#e3e6f2)}
@@ -384,6 +385,10 @@
           <button data-v="line">线稿</button>
           <button data-v="sketch">素描</button>
           <button data-v="cartoon">卡通</button>
+          <button data-v="water">水彩</button>
+          <button data-v="ink">水墨</button>
+          <button data-v="pencil">彩铅</button>
+          <button data-v="oil">油画</button>
         </div>
         <div class="style-strength" id="styleStrength" style="display:none">
           <label>强度 <span class="val" id="styleVal">50</span></label>
@@ -773,7 +778,7 @@ let appliedGrid=null, appliedW=0, appliedH=0; // 已「应用」的正式网格�
 let showCode=true, showGrid=true;
 let bgColors=[]; // 手动拾取的背景色列表 [{r,g,b},...]，空=未拾取（退回四角自动检测）
 let crop=null; // 裁切区域 {x,y,w,h} 相对原图 0~1 比例, null=全图
-let STYLE='orig'; // 风格预处理：orig 原图 / line 线稿 / sketch 素描 / cartoon 卡通（强度实时读滑杆，见 #styleAmount）
+let STYLE='orig'; // 风格预处理：orig 原图 / line 线稿 / sketch 素描 / cartoon 卡通 / water 水彩 / ink 水墨 / pencil 彩铅 / oil 油画（强度实时读滑杆，见 #styleAmount）
 let previewPending=false, previewRAF=0; // 拖拽预览节流（低清渲染）状态
 let sourceData=null;    // 当前生成所用「采样+风格后」原始像素（w×h RGBA），用于原图对照
 let viewOriginal=false; // true=预览显示原图（未匹配色号），false=显示拼豆图纸
@@ -852,7 +857,7 @@ function generate(commit, lowRes){
   const limit=+$('colorLimit').value;
   const shape=$('shape').querySelector('.on').dataset.v;
   const removeBg=$('removeBg').checked;
-  const dither = STYLE==='orig' && $('dither').checked; // 手绘风格（线稿/素描/卡通）需要平涂清晰，自动关闭抖动
+  const dither = STYLE==='orig' && $('dither').checked; // 风格化处理（线稿/素描/卡通/水彩/水墨/彩铅/油画）需要平涂清晰，自动关闭抖动
   const bri=+$('brightness').value, con=+$('contrast').value, sat=+$('saturation').value;
 
   // 采样：把原图（或裁切区域）缩到 w×h
@@ -867,7 +872,7 @@ function generate(commit, lowRes){
   }
   let data=octx.getImageData(0,0,w,h).data;
 
-  // 风格预处理（线稿/素描/卡通）：在匹配色号前先转换像素
+  // 风格预处理（线稿/素描/卡通/水彩/水墨/彩铅/油画）：在匹配色号前先转换像素
   if(STYLE && STYLE!=='orig') data=applyStyle(data, w, h, STYLE, +$('styleAmount').value);
   sourceData = data; // 留存「采样+风格后」原图像素，供原图对照
 
@@ -1461,7 +1466,7 @@ $('resetSize').addEventListener('click',()=>{ resetSliders(['width','height']); 
 $('resetColor').addEventListener('click',()=>{ resetSliders(['colorLimit']); generate(); });
 $('resetTone').addEventListener('click',()=>{ resetSliders(['brightness','contrast','saturation']); generate(); });
 
-/* ============ 风格预处理：线稿 / 素描 / 卡通 ============ */
+/* ============ 风格预处理：线稿 / 素描 / 卡通 / 水彩 / 水墨 / 彩铅 / 油画 ============ */
 function boxBlurGray(g, w, h, r){
   const tmp=new Float32Array(g.length), out=new Uint8ClampedArray(g.length);
   for(let y=0;y<h;y++){ const row=y*w;
@@ -1484,40 +1489,61 @@ function boxBlurRGB(data, w, h, r){
       const p=(y*w+x)*4; out[p]=sr/c; out[p+1]=sg/c; out[p+2]=sb/c; out[p+3]=data[p+3]; } }
   return out;
 }
+/* 线稿：钢笔手绘——自适应阈值 → 软边抗锯齿 + 线宽随边缘强弱（笔压）+ 位移抖动 + 墨迹浓淡不匀 */
 function styleLine(data, w, h, amount){
   const n=w*h, g=new Float32Array(n);
   for(let i=0;i<n;i++){ const p=i*4; g[i]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2]; }
   const sm=boxBlurGray(g, w, h, 1); // 先轻微平滑去噪，线条更连贯
-  // 先求梯度幅值与全局最大值，用自适应阈值：任何照片都能稳定出线
-  const mag=new Float32Array(n); let maxM=0;
-  for(let y=0;y<h;y++){ const ym=y>0?y-1:0, yp=y<h-1?y+1:h-1;
-    for(let x=0;x<w;x++){ const xm=x>0?x-1:0, xp=x<w-1?x+1:w-1;
-      const tl=sm[ym*w+xm], tc=sm[ym*w+x], tr=sm[ym*w+xp];
-      const ml=sm[y*w+xm], mr=sm[y*w+xp];
-      const bl=sm[yp*w+xm], bc=sm[yp*w+x], br=sm[yp*w+xp];
-      const gx=(tr+2*mr+br)-(tl+2*ml+bl);
-      const gy=(bl+2*bc+br)-(tl+2*tc+tr);
-      const m=Math.sqrt(gx*gx+gy*gy); mag[y*w+x]=m; if(m>maxM)maxM=m;
-    } }
+  // 采样位移：线条像手绘一样轻微抖动、不僵直
+  const jit=0.8 + amount*0.012;
+  const gs=new Float32Array(n);
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const sx=Math.max(0, Math.min(w-1, x+(valueNoise(x*0.22+7.3, y*0.22)-0.5)*2*jit));
+      const sy=Math.max(0, Math.min(h-1, y+(valueNoise(x*0.22, y*0.22+11.7)-0.5)*2*jit));
+      const x0=sx|0, y0=sy|0, x1=x0<w-1?x0+1:x0, y1=y0<h-1?y0+1:y0;
+      const fx=sx-x0, fy=sy-y0;
+      gs[y*w+x]=(sm[y0*w+x0]*(1-fx)+sm[y0*w+x1]*fx)*(1-fy)+(sm[y1*w+x0]*(1-fx)+sm[y1*w+x1]*fx)*fy;
+    }
+  }
+  // 自适应阈值：先求梯度幅值与全局最大值，任何照片都能稳定出线
+  const {mag, maxM}=sobelMag(gs, w, h);
   const thr=maxM>0 ? maxM*(0.40 - amount*0.0036) : Infinity; // 强度↑阈值↓→线越多
   const out=new Uint8ClampedArray(n*4);
-  for(let i=0;i<n;i++){ const v=mag[i]>=thr?0:255; const p=i*4; out[p]=out[p+1]=out[p+2]=v; out[p+3]=255; }
+  for(let i=0;i<n;i++){
+    let cov = maxM>0 ? (mag[i]/thr - 0.55)/0.45 : 0; // 弱梯度归零（纸面干净），强边缘成线
+    if(cov<=0) cov=0; else if(cov>=1) cov=1; else cov=cov*cov*(3-2*cov); // 软边抗锯齿
+    if(cov>0.02) cov*=0.86 + 0.28*valueNoise((i%w)*0.22+2.2, ((i/w)|0)*0.22); // 墨迹浓淡不匀（沿笔画起伏）
+    if(cov>1) cov=1;
+    const v=255-235*cov; // 墨色≈20，不是死黑
+    const p=i*4; out[p]=out[p+1]=out[p+2]=v; out[p+3]=255;
+  }
   return out;
 }
+/* 素描：反锐化压重轮廓 → 石墨浓度 → 斜向排线（暗部交叉、笔压起伏）→ 纸纹颗粒 */
 function styleSketch(data, w, h, amount){
-  const n=w*h, g=new Uint8ClampedArray(n);
-  for(let i=0;i<n;i++){ const p=i*4; g[i]=(0.299*data[p]+0.587*data[p+1]+0.114*data[p+2])|0; }
-  const r=Math.max(1, Math.round(1 + amount/40)); // 平滑半径 1..3
+  const n=w*h, g=new Float32Array(n);
+  for(let i=0;i<n;i++){ const p=i*4; g[i]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2]; }
+  const r=Math.max(1, Math.round(1 + amount/45)); // 平滑半径 1..3
   const blurred=boxBlurGray(g, w, h, r);
-  const k=1.5 + amount/18; // 边缘增强 1.5..7，越大线条越重
-  const levels=Math.max(6, Math.round(20 - amount/8)); // 灰阶量化 20..7，形成铅笔明暗层次
-  const q=255/(levels-1);
+  const k=0.9 + amount/22; // 边缘增强，越大轮廓越重
+  const hatchAmp=6 + amount*0.16; // 排线强度
   const out=new Uint8ClampedArray(n*4);
-  for(let i=0;i<n;i++){
-    let v=g[i] + k*(g[i]-blurred[i]); // 反锐化：轮廓/纹理更黑
-    if(v<0)v=0; else if(v>255)v=255;
-    v=Math.round(v/q)*q;
-    const p=i*4; out[p]=out[p+1]=out[p+2]=v; out[p+3]=255;
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const i=y*w+x;
+      let v=g[i] + k*(g[i]-blurred[i]); // 反锐化：铅笔压重轮廓/纹理
+      if(v<0)v=0; else if(v>255)v=255;
+      const dark=(255-v)/255; // 石墨浓度
+      // 斜向排线：两个方向交叉，越暗排线越重；笔压沿笔画起伏
+      const s1=valueNoise((x+y)*0.10, 0.7), s2=valueNoise((x-y)*0.10, 3.1);
+      const press=0.45 + 0.55*valueNoise(x*0.07+5.0, y*0.07);
+      const hh=(s1-0.5)*2 + (s2-0.5)*2*Math.min(1, dark*1.6);
+      v-=hh*hatchAmp*(0.25+0.75*dark)*press;
+      v+=(hash2(x*3+1, y*3+5)-0.5)*2*(2.0+amount*0.02); // 纸纹颗粒
+      if(v<0)v=0; else if(v>255)v=255;
+      const p=i*4; out[p]=out[p+1]=out[p+2]=v; out[p+3]=255;
+    }
   }
   return out;
 }
@@ -1538,10 +1564,77 @@ function styleCartoon(data, w, h, amount){
     R=R<0?0:(R>255?255:R); G=G<0?0:(G>255?255:G); B=B<0?0:(B>255?255:B);
     out[p]=R; out[p+1]=G; out[p+2]=B; out[p+3]=smooth[p+3];
   }
-  // 3) 黑色粗轮廓：对「平滑后亮度」做 Sobel（而非平涂结果），只勾勒真实物体边界、不描色阶，避免噪点
+  // 3) 手绘轮廓：对「平滑后亮度」做噪声位移再求梯度（线条自然抖动、不僵直）
   const gray=new Float32Array(n);
   for(let i=0;i<n;i++){ const p=i*4; gray[i]=0.299*smooth[p]+0.587*smooth[p+1]+0.114*smooth[p+2]; }
-  const mag=new Float32Array(n); let maxM=0;
+  const jit=0.7 + amount*0.010;
+  const gs=new Float32Array(n);
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const sx=Math.max(0, Math.min(w-1, x+(valueNoise(x*0.25+3.7, y*0.25)-0.5)*2*jit));
+      const sy=Math.max(0, Math.min(h-1, y+(valueNoise(x*0.25, y*0.25+9.1)-0.5)*2*jit));
+      const x0=sx|0, y0=sy|0, x1=x0<w-1?x0+1:x0, y1=y0<h-1?y0+1:y0;
+      const fx=sx-x0, fy=sy-y0;
+      gs[y*w+x]=(gray[y0*w+x0]*(1-fx)+gray[y0*w+x1]*fx)*(1-fy)+(gray[y1*w+x0]*(1-fx)+gray[y1*w+x1]*fx)*fy;
+    }
+  }
+  const {mag, maxM}=sobelMag(gs, w, h);
+  if(maxM>0){
+    const thr=Math.max(6, maxM*(0.30 - amount*0.0016)); // 自适应阈值（0.30→0.14），只勾真实边界，软渐变（光晕等）不成线
+    for(let i=0;i<n;i++){
+      let t=mag[i]/thr;
+      if(t<=0.50) continue;
+      t=(t-0.50)/0.50;
+      t*=0.88 + 0.24*valueNoise((i%w)*0.35+1.3, ((i/w)|0)*0.35); // 线宽沿线不均
+      let cov = t>=1?1:t*t*(3-2*t); // 软边抗锯齿
+      if(cov>0.02){
+        const p=i*4, ink=30;
+        out[p]=out[p]*(1-cov)+ink*cov;
+        out[p+1]=out[p+1]*(1-cov)+ink*cov;
+        out[p+2]=out[p+2]*(1-cov)+ink*cov;
+      }
+    }
+  }
+  return out;
+}
+/* Kuwahara 滤波（积分图加速）：每像素在四个象限中取方差最小的均值，产生油画般的笔触块面 */
+function kuwaharaRGB(data, w, h, r){
+  const W=w+1, sL=new Float64Array(W*(h+1)), sL2=new Float64Array(W*(h+1));
+  const sR=new Float64Array(W*(h+1)), sG=new Float64Array(W*(h+1)), sB=new Float64Array(W*(h+1)), sA=new Float64Array(W*(h+1));
+  for(let y=0;y<h;y++){
+    let rL=0,rL2=0,rR=0,rG=0,rB=0,rA=0; const row=y*w;
+    for(let x=0;x<w;x++){
+      const p=(row+x)*4, R=data[p], G=data[p+1], B=data[p+2];
+      const L=0.299*R+0.587*G+0.114*B;
+      rL+=L; rL2+=L*L; rR+=R; rG+=G; rB+=B; rA+=data[p+3];
+      const i=(y+1)*W+(x+1), up=i-W;
+      sL[i]=rL+sL[up]; sL2[i]=rL2+sL2[up]; sR[i]=rR+sR[up]; sG[i]=rG+sG[up]; sB[i]=rB+sB[up]; sA[i]=rA+sA[up];
+    }
+  }
+  const sum=(S,x0,y0,x1,y1)=>S[(y1+1)*W+(x1+1)]-S[y0*W+(x1+1)]-S[(y1+1)*W+x0]+S[y0*W+x0];
+  const out=new Uint8ClampedArray(data.length);
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      let bestVar=Infinity, bR=0,bG=0,bB=0,bA=255;
+      for(let q=0;q<4;q++){
+        const x0=(q&1)?x:(x-r<0?0:x-r), x1=(q&1)?(x+r>w-1?w-1:x+r):x;
+        const y0=(q&2)?y:(y-r<0?0:y-r), y1=(q&2)?(y+r>h-1?h-1:y+r):y;
+        const cnt=(x1-x0+1)*(y1-y0+1);
+        const m1=sum(sL,x0,y0,x1,y1)/cnt, m2=sum(sL2,x0,y0,x1,y1)/cnt;
+        const vr=m2-m1*m1;
+        if(vr<bestVar){ bestVar=vr;
+          bR=sum(sR,x0,y0,x1,y1)/cnt; bG=sum(sG,x0,y0,x1,y1)/cnt;
+          bB=sum(sB,x0,y0,x1,y1)/cnt; bA=sum(sA,x0,y0,x1,y1)/cnt;
+        }
+      }
+      const p=(y*w+x)*4; out[p]=bR; out[p+1]=bG; out[p+2]=bB; out[p+3]=bA;
+    }
+  }
+  return out;
+}
+/* 灰度 Sobel 梯度幅值（水彩湿边 / 水墨墨边共用） */
+function sobelMag(gray, w, h){
+  const n=w*h, mag=new Float32Array(n); let maxM=0;
   for(let y=0;y<h;y++){ const ym=y>0?y-1:0, yp=y<h-1?y+1:h-1;
     for(let x=0;x<w;x++){ const xm=x>0?x-1:0, xp=x<w-1?x+1:w-1;
       const tl=gray[ym*w+xm], tc=gray[ym*w+x], tr=gray[ym*w+xp];
@@ -1551,14 +1644,165 @@ function styleCartoon(data, w, h, amount){
       const gy=(bl+2*bc+br)-(tl+2*tc+tr);
       const m=Math.sqrt(gx*gx+gy*gy); mag[y*w+x]=m; if(m>maxM)maxM=m;
     } }
-  const thr=Math.max(6, maxM*(0.16 - amount*0.0008)); // 自适应阈值（0.16→0.08），强度↑轮廓越多，但始终在安全区间
-  for(let i=0;i<n;i++){ if(mag[i]>=thr){ const p=i*4; out[p]=25; out[p+1]=25; out[p+2]=25; } }
+  return {mag, maxM};
+}
+/* 确定性值噪声（哈希晶格 + 平滑插值）：纸纹 / 厚涂肌理 / 飞白共用，重渲染结果一致 */
+function hash2(x,y){ let h=(Math.imul(x,374761393) + Math.imul(y,668265263))|0; h=Math.imul(h^(h>>>13),1274126177); return ((h^(h>>>16))>>>0)/4294967295; }
+function valueNoise(x,y){
+  const xi=Math.floor(x), yi=Math.floor(y), xf=x-xi, yf=y-yi;
+  const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+  const a=hash2(xi,yi), b=hash2(xi+1,yi), c=hash2(xi,yi+1), d=hash2(xi+1,yi+1);
+  return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v;
+}
+/* 沿等值线方向拉长采样：把块面拉成有方向感的笔触（油画用；平坦区默认横向） */
+function strokeElongate(data, w, h, len){
+  const n=w*h, out=new Uint8ClampedArray(data.length);
+  const gray=new Float32Array(n);
+  for(let i=0;i<n;i++){ const p=i*4; gray[i]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2]; }
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const i=y*w+x, p=i*4;
+      const xm=x>0?x-1:0, xp=x<w-1?x+1:w-1, ym=y>0?y-1:0, yp=y<h-1?y+1:h-1;
+      let tx=-(gray[yp*w+x]-gray[ym*w+x]), ty=gray[y*w+xp]-gray[y*w+xm];
+      const tl=Math.hypot(tx,ty);
+      if(tl<1e-3){ tx=1; ty=0; } else { tx/=tl; ty/=tl; }
+      let sr=data[p]*2, sg=data[p+1]*2, sb=data[p+2]*2, c=2;
+      for(let s=1;s<=len;s++){
+        const ax=Math.round(x+tx*s), ay=Math.round(y+ty*s);
+        const bx=Math.round(x-tx*s), by=Math.round(y-ty*s);
+        if(ax>=0&&ax<w&&ay>=0&&ay<h){ const q=(ay*w+ax)*4; sr+=data[q]; sg+=data[q+1]; sb+=data[q+2]; c++; }
+        if(bx>=0&&bx<w&&by>=0&&by<h){ const q=(by*w+bx)*4; sr+=data[q]; sg+=data[q+1]; sb+=data[q+2]; c++; }
+      }
+      out[p]=sr/c; out[p+1]=sg/c; out[p+2]=sb/c; out[p+3]=data[p+3];
+    }
+  }
+  return out;
+}
+/* 水彩：Kuwahara 平涂 + 颜料扩散 → 提饱和、亮部留白（纸白）→ 湿边沉淀 */
+function styleWater(data, w, h, amount){
+  const n=w*h;
+  const kr=Math.max(1, Math.min(5, Math.round(Math.min(w,h)*(0.011 + amount*0.00016))));
+  let s=kuwaharaRGB(data, w, h, kr);
+  s=boxBlurRGB(s, w, h, 1);
+  const out=new Uint8ClampedArray(n*4);
+  for(let i=0;i<n;i++){
+    const p=i*4;
+    let R=s[p], G=s[p+1], B=s[p+2];
+    const gray=0.299*R+0.587*G+0.114*B, sat=1.30;
+    R=gray+(R-gray)*sat; G=gray+(G-gray)*sat; B=gray+(B-gray)*sat;
+    const lum=0.299*R+0.587*G+0.114*B;
+    const t=Math.max(0,(lum-100)/155), lift=t*(0.35+amount*0.004);
+    R+=(255-R)*lift; G+=(255-G)*lift; B+=(255-B)*lift;
+    const pg=(valueNoise((i%w)*0.7, ((i/w)|0)*0.7)-0.5)*(6+amount*0.08); // 纸纹颗粒
+    R+=pg; G+=pg; B+=pg;
+    out[p]=R; out[p+1]=G; out[p+2]=B; out[p+3]=s[p+3];
+  }
+  const gray=new Float32Array(n);
+  for(let i=0;i<n;i++){ const p=i*4; gray[i]=0.299*s[p]+0.587*s[p+1]+0.114*s[p+2]; }
+  const {mag, maxM}=sobelMag(gray, w, h);
+  if(maxM>0){
+    const thr=maxM*(0.22 - amount*0.0012), dark=0.80 - amount*0.0013;
+    for(let i=0;i<n;i++){ if(mag[i]>=thr){
+      const dd=dark*(0.85 + 0.30*valueNoise((i%w)*0.6, ((i/w)|0)*0.6)); // 沉积不均，湿边更自然
+      const p=i*4; out[p]*=dd; out[p+1]*=dd; out[p+2]*=dd;
+    } }
+  }
+  return out;
+}
+/* 水墨：柔化 → 轮廓积墨 → 浓淡阈值（暗处浓墨、亮处留白）→ 墨分层次量化 */
+function styleInk(data, w, h, amount){
+  const n=w*h, g=new Float32Array(n);
+  for(let i=0;i<n;i++){ const p=i*4; g[i]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2]; }
+  const r=Math.max(1, Math.round(1 + amount/50));
+  const sm=boxBlurGray(g, w, h, r);
+  const {mag, maxM}=sobelMag(sm, w, h);
+  if(maxM>0){
+    const thr=maxM*(0.30 - amount*0.0016), dark=0.72 - amount*0.0018;
+    for(let i=0;i<n;i++){ if(mag[i]>=thr) sm[i]*=dark; }
+  }
+  const T=0.58 + amount*0.0028;  // 白纸阈值：亮于此留白
+  const T0=T-0.48;               // 全墨阈值
+  const levels=Math.max(5, Math.round(9 - amount*0.04));
+  const q=255/(levels-1);
+  const out=new Uint8ClampedArray(n*4);
+  for(let i=0;i<n;i++){
+    let d=(T - sm[i]/255)/(T-T0);  // 墨色浓度
+    if(d<0)d=0; else if(d>1)d=1;
+    if(d>0.05){ // 飞白：干笔横向擦痕
+      d*=0.80 + 0.40*valueNoise((i%w)*0.12, ((i/w)|0)*0.6);
+      if(d>1)d=1;
+    }
+    const ink=Math.round((1-d)*255/q)*q;
+    const p=i*4; out[p]=out[p+1]=out[p+2]=ink; out[p+3]=255;
+  }
+  return out;
+}
+/* 彩铅：反锐化描出笔触 → 轻降饱和、提亮 → 纸纹颗粒（确定性哈希，重渲染一致） */
+function stylePencil(data, w, h, amount){
+  const n=w*h;
+  const r=Math.max(1, Math.round(1 + amount/60));
+  const smooth=boxBlurRGB(data, w, h, r);
+  const k=0.5 + amount/35;
+  const grainAmp=2 + amount*0.025;
+  const out=new Uint8ClampedArray(n*4);
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const i=y*w+x, p=i*4;
+      const d=k*(0.299*(data[p]-smooth[p])+0.587*(data[p+1]-smooth[p+1])+0.114*(data[p+2]-smooth[p+2]));
+      let R=data[p]+d;
+      let G=data[p+1]+d;
+      let B=data[p+2]+d;
+      if(R<0)R=0; else if(R>255)R=255;
+      if(G<0)G=0; else if(G>255)G=255;
+      if(B<0)B=0; else if(B>255)B=255;
+      const gray=0.299*R+0.587*G+0.114*B, sat=0.90;
+      R=gray+(R-gray)*sat; G=gray+(G-gray)*sat; B=gray+(B-gray)*sat;
+      R+=(255-R)*0.06; G+=(255-G)*0.06; B+=(255-B)*0.06;
+      const hv=(((x*73856093)^(y*19349663))%17+17)%17;
+      const grain=(hv/16-0.5)*2*grainAmp;
+      R+=grain; G+=grain; B+=grain;
+      // 斜向排线笔触：中间调最明显
+      const lum2=(R+G+B)/3, wmid=1-Math.abs(2*lum2/255-1);
+      const hatch=Math.sin((x+y)*0.55)*(0.6+0.8*valueNoise(x*0.3,y*0.3))*(3+amount*0.05)*(0.35+0.65*wmid);
+      R+=hatch; G+=hatch; B+=hatch;
+      out[p]=R; out[p+1]=G; out[p+2]=B; out[p+3]=data[p+3];
+    }
+  }
+  return out;
+}
+/* 油画：Kuwahara 笔触块面 → 沿轮廓拉长成笔触 → 提饱和提对比 → 厚涂肌理打光 */
+function styleOil(data, w, h, amount){
+  const kr=Math.max(1, Math.min(8, Math.round(Math.min(w,h)*(0.018 + amount*0.00022))));
+  let s=kuwaharaRGB(data, w, h, kr);
+  s=strokeElongate(s, w, h, Math.max(1, Math.min(4, Math.round(1 + amount/35))));
+  const levels=Math.max(8, Math.round(12 - amount*0.03));
+  const q=255/(levels-1);
+  const out=new Uint8ClampedArray(w*h*4);
+  const amp=10 + amount*0.28; // 厚涂肌理强度
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const p=(y*w+x)*4;
+      let R=s[p], G=s[p+1], B=s[p+2];
+      const gray=0.299*R+0.587*G+0.114*B, sat=1.40;
+      R=(gray+(R-gray)*sat-128)*1.06+128;
+      G=(gray+(G-gray)*sat-128)*1.06+128;
+      B=(gray+(B-gray)*sat-128)*1.06+128;
+      R=Math.round(R/q)*q; G=Math.round(G/q)*q; B=Math.round(B/q)*q;
+      // 厚涂：噪声高度场斜向打光（左上光源），颜料起伏感
+      const e=(valueNoise((x-1)*0.20,(y-1)*0.20)-valueNoise((x+1)*0.20,(y+1)*0.20))*amp;
+      out[p]=R+e; out[p+1]=G+e; out[p+2]=B+e; out[p+3]=s[p+3];
+    }
+  }
   return out;
 }
 function applyStyle(data, w, h, style, amount){
   if(style==='line') return styleLine(data, w, h, amount);
   if(style==='sketch') return styleSketch(data, w, h, amount);
   if(style==='cartoon') return styleCartoon(data, w, h, amount);
+  if(style==='water') return styleWater(data, w, h, amount);
+  if(style==='ink') return styleInk(data, w, h, amount);
+  if(style==='pencil') return stylePencil(data, w, h, amount);
+  if(style==='oil') return styleOil(data, w, h, amount);
   return data;
 }
 $('style').addEventListener('click',e=>{
@@ -1741,7 +1985,7 @@ function restoreSettings(){
   if(d.brightness!=null){ $('brightness').value=d.brightness; $('briVal').textContent=d.brightness; }
   if(d.contrast!=null){ $('contrast').value=d.contrast; $('conVal').textContent=d.contrast; }
   if(d.saturation!=null){ $('saturation').value=d.saturation; $('satVal').textContent=d.saturation; }
-  if(d.style && ['orig','line','sketch','cartoon'].includes(d.style)){
+  if(d.style && ['orig','line','sketch','cartoon','water','ink','pencil','oil'].includes(d.style)){
     STYLE=d.style;
     const b=$('style').querySelector(`[data-v="${d.style}"]`);
     if(b){ $('style').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); }
