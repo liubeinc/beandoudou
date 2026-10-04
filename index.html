@@ -1630,112 +1630,67 @@ function boxBlurRGB(data, w, h, r){
   return out;
 }
 /* 线稿：钢笔手绘——自适应阈值 → 软边抗锯齿 + 线宽随边缘强弱（笔压）+ 位移抖动 + 墨迹浓淡不匀 */
+/* 线稿：① 提铅笔线稿 → ② 笔触渲成硬边细钢笔线 → ③ 纸白打底（无色彩块） */
 function styleLine(data, w, h, amount){
-  const n=w*h, g=new Float32Array(n);
-  for(let i=0;i<n;i++){ const p=i*4; g[i]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2]; }
-  const sm=boxBlurGray(g, w, h, 1); // 先轻微平滑去噪，线条更连贯
-  // 采样位移：线条像手绘一样轻微抖动、不僵直
-  const jit=0.8 + amount*0.012;
-  const gs=new Float32Array(n);
-  for(let y=0;y<h;y++){
-    for(let x=0;x<w;x++){
-      const sx=Math.max(0, Math.min(w-1, x+(valueNoise(x*0.22+7.3, y*0.22)-0.5)*2*jit));
-      const sy=Math.max(0, Math.min(h-1, y+(valueNoise(x*0.22, y*0.22+11.7)-0.5)*2*jit));
-      const x0=sx|0, y0=sy|0, x1=x0<w-1?x0+1:x0, y1=y0<h-1?y0+1:y0;
-      const fx=sx-x0, fy=sy-y0;
-      gs[y*w+x]=(sm[y0*w+x0]*(1-fx)+sm[y0*w+x1]*fx)*(1-fy)+(sm[y1*w+x0]*(1-fx)+sm[y1*w+x1]*fx)*fy;
-    }
-  }
-  // 自适应阈值：先求梯度幅值与全局最大值，任何照片都能稳定出线
-  const {mag, maxM}=sobelMag(gs, w, h);
-  const thr=maxM>0 ? maxM*(0.40 - amount*0.0036) : Infinity; // 强度↑阈值↓→线越多
-  const out=new Uint8ClampedArray(n*4);
-  for(let i=0;i<n;i++){
-    let cov = maxM>0 ? (mag[i]/thr - 0.55)/0.45 : 0; // 弱梯度归零（纸面干净），强边缘成线
-    if(cov<=0) cov=0; else if(cov>=1) cov=1; else cov=cov*cov*(3-2*cov); // 软边抗锯齿
-    if(cov>0.02) cov*=0.86 + 0.28*valueNoise((i%w)*0.22+2.2, ((i/w)|0)*0.22); // 墨迹浓淡不匀（沿笔画起伏）
-    if(cov>1) cov=1;
-    const v=255-235*cov; // 墨色≈20，不是死黑
-    const p=i*4; out[p]=out[p+1]=out[p+2]=v; out[p+3]=255;
-  }
-  return out;
+  const n=w*h;
+  const {ink}=lineArt(data, w, h, amount);
+  const base=new Uint8ClampedArray(n*4);
+  for(let i=0;i<n;i++){ const p=i*4; base[p]=base[p+1]=base[p+2]=255; base[p+3]=255; }
+  return overlayRGB(base, renderStroke(ink, w, h,
+    {color:[20,20,22], alpha:0.95, thr:0.45, soft:0.10, width:1,
+     grain:0.10, wobble:0.8+amount*0.006}));
 }
-/* 素描：反锐化压重轮廓 → 石墨浓度 → 斜向排线（暗部交叉、笔压起伏）→ 纸纹颗粒 */
+/* 素描：① 提铅笔线稿 → ② 笔触渲成软石墨（无硬阈值）→ ③ 区域均值出明暗 + 交叉排线 + 纸纹 */
 function styleSketch(data, w, h, amount){
-  const n=w*h, g=new Float32Array(n);
-  for(let i=0;i<n;i++){ const p=i*4; g[i]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2]; }
-  const r=Math.max(1, Math.round(1 + amount/45)); // 平滑半径 1..3
-  const blurred=boxBlurGray(g, w, h, r);
-  const k=0.9 + amount/22; // 边缘增强，越大轮廓越重
+  const n=w*h;
+  const {ink, lab, sums}=lineArt(data, w, h, amount);
   const hatchAmp=6 + amount*0.16; // 排线强度
-  const out=new Uint8ClampedArray(n*4);
+  // 每区的石墨浓度（区域均值亮度 → 明暗块面）
+  const dark=sums.map(([sr,sg,sb,cnt])=>{
+    const L=(0.299*sr+0.587*sg+0.114*sb)/cnt;
+    return (255-L)/255;
+  });
+  const base=new Uint8ClampedArray(n*4);
   for(let y=0;y<h;y++){
     for(let x=0;x<w;x++){
-      const i=y*w+x;
-      let v=g[i] + k*(g[i]-blurred[i]); // 反锐化：铅笔压重轮廓/纹理
-      if(v<0)v=0; else if(v>255)v=255;
-      const dark=(255-v)/255; // 石墨浓度
+      const i=y*w+x, d=dark[lab[i]]!=null?dark[lab[i]]:0;
+      let v=246 - d*190; // 纸底 246，越暗越压
       // 斜向排线：两个方向交叉，越暗排线越重；笔压沿笔画起伏
       const s1=valueNoise((x+y)*0.10, 0.7), s2=valueNoise((x-y)*0.10, 3.1);
       const press=0.45 + 0.55*valueNoise(x*0.07+5.0, y*0.07);
-      const hh=(s1-0.5)*2 + (s2-0.5)*2*Math.min(1, dark*1.6);
-      v-=hh*hatchAmp*(0.25+0.75*dark)*press;
+      const hh=(s1-0.5)*2 + (s2-0.5)*2*Math.min(1, d*1.6);
+      v-=hh*hatchAmp*(0.25+0.75*d)*press;
       v+=(hash2(x*3+1, y*3+5)-0.5)*2*(2.0+amount*0.02); // 纸纹颗粒
       if(v<0)v=0; else if(v>255)v=255;
-      const p=i*4; out[p]=out[p+1]=out[p+2]=v; out[p+3]=255;
+      const p=i*4; base[p]=base[p+1]=base[p+2]=v; base[p+3]=255;
     }
   }
-  return out;
+  return overlayRGB(base, renderStroke(ink, w, h,
+    {color:[70,70,72], alpha:0.75, thr:0.06, soft:0.55, width:2, grain:0.25, wobble:1.6}));
 }
+/* 卡通：① 提铅笔线稿 → ② 笔触渲成软抗锯齿黑线 → ③ 区域均值色阶量化 + 提饱和 */
 function styleCartoon(data, w, h, amount){
   const n=w*h;
-  // 1) 强平滑：抹平照片纹理/噪点，半径随图幅自适应（小图 1、大图约 2~4），避免小图过度糊边
-  const r=Math.max(1, Math.round(Math.min(w,h)*(0.010 + amount*0.00010)));
-  const smooth=boxBlurRGB(data, w, h, r);
-  // 2) 平涂量化 + 提饱和（通道色阶 5..3，强度越高越平；下限 3 避免把深色区量化成纯黑）
-  const levels=Math.max(3, Math.round(5 - amount*0.02));
+  const {ink, lab, sums, sm}=lineArt(data, w, h, amount);
+  const levels=Math.max(3, Math.round(5 - amount*0.02)); // 强度越高越平；下限 3 避免深色区量化成纯黑
   const q=255/(levels-1);
-  const out=new Uint8ClampedArray(n*4);
-  for(let i=0;i<n;i++){
-    const p=i*4;
-    let R=Math.round(smooth[p]/q)*q, G=Math.round(smooth[p+1]/q)*q, B=Math.round(smooth[p+2]/q)*q;
+  const cols=sums.map(([sr,sg,sb,cnt])=>{
+    let R=sr/cnt, G=sg/cnt, B=sb/cnt;
+    // 按「亮度」分档再等比缩放，保色相——逐通道各自量化会把色相搞坏（米色→粉红、棕→墨绿）
+    const L=0.299*R+0.587*G+0.114*B;
+    const k=L>0 ? (Math.round(L/q)*q)/L : 1;
+    R*=k; G*=k; B*=k;
     const gray=0.299*R+0.587*G+0.114*B, sat=1.35; // 提饱和让颜色更鲜明
     R=gray+(R-gray)*sat; G=gray+(G-gray)*sat; B=gray+(B-gray)*sat;
-    R=R<0?0:(R>255?255:R); G=G<0?0:(G>255?255:G); B=B<0?0:(B>255?255:B);
-    out[p]=R; out[p+1]=G; out[p+2]=B; out[p+3]=smooth[p+3];
+    return [R<0?0:(R>255?255:R), G<0?0:(G>255?255:G), B<0?0:(B>255?255:B)];
+  });
+  const base=new Uint8ClampedArray(n*4);
+  for(let i=0;i<n;i++){
+    const p=i*4, c=cols[lab[i]]||[255,255,255];
+    base[p]=c[0]; base[p+1]=c[1]; base[p+2]=c[2]; base[p+3]=sm[p+3];
   }
-  // 3) 手绘轮廓：对「平滑后亮度」做噪声位移再求梯度（线条自然抖动、不僵直）
-  const gray=new Float32Array(n);
-  for(let i=0;i<n;i++){ const p=i*4; gray[i]=0.299*smooth[p]+0.587*smooth[p+1]+0.114*smooth[p+2]; }
-  const jit=0.7 + amount*0.010;
-  const gs=new Float32Array(n);
-  for(let y=0;y<h;y++){
-    for(let x=0;x<w;x++){
-      const sx=Math.max(0, Math.min(w-1, x+(valueNoise(x*0.25+3.7, y*0.25)-0.5)*2*jit));
-      const sy=Math.max(0, Math.min(h-1, y+(valueNoise(x*0.25, y*0.25+9.1)-0.5)*2*jit));
-      const x0=sx|0, y0=sy|0, x1=x0<w-1?x0+1:x0, y1=y0<h-1?y0+1:y0;
-      const fx=sx-x0, fy=sy-y0;
-      gs[y*w+x]=(gray[y0*w+x0]*(1-fx)+gray[y0*w+x1]*fx)*(1-fy)+(gray[y1*w+x0]*(1-fx)+gray[y1*w+x1]*fx)*fy;
-    }
-  }
-  const {mag, maxM}=sobelMag(gs, w, h);
-  if(maxM>0){
-    const thr=Math.max(6, maxM*(0.30 - amount*0.0016)); // 自适应阈值（0.30→0.14），只勾真实边界，软渐变（光晕等）不成线
-    for(let i=0;i<n;i++){
-      let t=mag[i]/thr;
-      if(t<=0.50) continue;
-      t=(t-0.50)/0.50;
-      t*=0.88 + 0.24*valueNoise((i%w)*0.35+1.3, ((i/w)|0)*0.35); // 线宽沿线不均
-      let cov = t>=1?1:t*t*(3-2*t); // 软边抗锯齿
-      if(cov>0.02){
-        const p=i*4, ink=30;
-        out[p]=out[p]*(1-cov)+ink*cov;
-        out[p+1]=out[p+1]*(1-cov)+ink*cov;
-        out[p+2]=out[p+2]*(1-cov)+ink*cov;
-      }
-    }
-  }
-  return out;
+  return overlayRGB(base, renderStroke(ink, w, h,
+    {color:[30,30,34], alpha:0.90, thr:0.50, soft:0.16, width:1, grain:0.08, wobble:0.9}));
 }
 /* Kuwahara 滤波（积分图加速）：每像素在四个象限中取方差最小的均值，产生油画般的笔触块面 */
 function kuwaharaRGB(data, w, h, r){
@@ -2107,13 +2062,90 @@ function regionMap(data, w, h, frac, minThr, gateFrac){
     }
     if(b) line[i]=1;
   }
-  return {lab, line, sums};
+  return {lab, line, sums, strength, gate};
 }
-/* 动漫（赛璐璐）：先按轮廓切出区域（线闭合、1 格宽），每区取均值整块平涂 */
+
+/* ============ 风格管线：① 提铅笔线稿 → ② 按风格做笔触 → ③ 处理色块 ============
+   线稿类风格（线稿/素描/卡通/动漫/蜡笔）共用这一套。第一阶段只做一次「线在哪、有多重」的提取，
+   输出的是 0~1 的**软墨量**（不是二值掩码）——铅笔的浓淡就来自边缘能量 + 笔压 + 颗粒；
+   第二阶段按所选风格把这份墨量重新渲染成该风格的笔触；第三阶段才各自填色块。 */
+
+/* ① 铅笔线稿提取：regionMap 给闭合区域与 1 格宽的线，这里把线转成软墨量。
+   ink 的浓淡三层来源：strength（该处边缘有多强）→ 强边更黑弱边更淡；valueNoise（笔压沿笔画起伏）；
+   hash2（铅笔颗粒密度）。全程确定性，不用 Math.random，同一张图重渲染结果一致。 */
+function lineArt(data, w, h, amount){
+  const n=w*h;
+  const sm=boxBlurRGB(data, w, h, 1);              // 先平滑再求梯度，脊线才稳
+  const frac=0.20 + amount*0.0009;                 // 强度↑ → 分位阈降 → 线更多
+  const {lab, line, sums, strength, gate}=regionMap(sm, w, h, frac, 20, 0.42);
+  const ink=new Float32Array(n);
+  const g=Math.max(1e-3, gate);                    // 平坦图 gate 可能极小，兜底防止除零
+  for(let i=0;i<n;i++){
+    if(!line[i]) continue;
+    const x=i%w, y=(i/w)|0;
+    const press=0.50 + 0.50*valueNoise(x*0.33+2.2, y*0.33);  // 笔压起伏
+    const grain=0.70 + 0.30*hash2(x*2+3, y*2+7);             // 颗粒密度
+    let e=strength[i]/g; if(e>1) e=1;
+    const eS=e*e*(3-2*e);                                    // smoothstep 软过渡
+    ink[i]=Math.min(1, (0.45+0.55*eS)*press*grain);
+  }
+  return {ink, lab, sums, sm};
+}
+
+/* ② 笔触渲染：把软墨量按 opts 渲染成某一种介质的线。
+   thr/soft 是「墨量 → 不透明度」的斜坡：thr 高 + soft 小 = 硬钢笔边（线稿）；
+   thr 低 + soft 大 = 没有硬阈值，出来是软石墨（素描）。
+   width 用邻域取最大实现加粗；wobble 让线条像手绘一样轻微抖动；grain 打散出纸纹/蜡质。
+   返回 RGBA 覆盖层，alpha 为 0 表示该格没有线。 */
+function renderStroke(ink, w, h, opts){
+  const o=Object.assign({color:[20,20,22], alpha:1, thr:0.45, soft:0.12,
+                         width:1, grain:0, wobble:0}, opts);
+  const n=w*h, out=new Uint8ClampedArray(n*4), r=Math.max(0, o.width-1);
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      let sx=x, sy=y;
+      if(o.wobble>0){                                  // 手绘位移：线不僵直
+        sx=x + (valueNoise(x*0.25+3.7, y*0.25)-0.5)*2*o.wobble;
+        sy=y + (valueNoise(x*0.25, y*0.25+9.1)-0.5)*2*o.wobble;
+      }
+      let v=0;                                          // 邻域取最大 → 加粗（不必膨胀掩码）
+      for(let dy=-r;dy<=r;dy++){
+        const gy=Math.round(sy)+dy; if(gy<0||gy>=h) continue;
+        for(let dx=-r;dx<=r;dx++){
+          const gx=Math.round(sx)+dx; if(gx<0||gx>=w) continue;
+          const s=ink[gy*w+gx]; if(s>v) v=s;
+        }
+      }
+      let a=(v-o.thr)/o.soft; if(a<0) a=0; else if(a>1) a=1;
+      a=a*a*(3-2*a);                                    // 软边抗锯齿
+      a*=o.alpha;
+      if(o.grain>0) a*=1 - o.grain*hash2(x*7+1, y*7+5);
+      const p=(y*w+x)*4;
+      out[p]=o.color[0]; out[p+1]=o.color[1]; out[p+2]=o.color[2];
+      out[p+3]=(a*255)|0;
+    }
+  }
+  return out;
+}
+
+/* 把笔触覆盖层 source-over 到色块上：覆盖层 alpha=0 的格保持底色不动（透明格仍是透明格） */
+function overlayRGB(base, ov){
+  const out=new Uint8ClampedArray(base.length);
+  for(let i=0;i<base.length;i+=4){
+    const a=ov[i+3]/255;
+    if(a<=0){ out[i]=base[i]; out[i+1]=base[i+1]; out[i+2]=base[i+2]; out[i+3]=base[i+3]; continue; }
+    out[i]=base[i]*(1-a)+ov[i]*a;
+    out[i+1]=base[i+1]*(1-a)+ov[i+1]*a;
+    out[i+2]=base[i+2]*(1-a)+ov[i+2]*a;
+    out[i+3]=base[i+3];                                 // 底色是透明的就保持透明
+  }
+  return out;
+}
+
+/* 动漫（赛璐璐）：① 提铅笔线稿 → ② 笔触渲成硬边近黑细线 → ③ 每区取均值整块平涂 */
 function styleAnime(data, w, h, amount){
   const n=w*h;
-  const sm=boxBlurRGB(data, w, h, 1);
-  const {lab, line, sums}=regionMap(sm, w, h, 0.22 + amount*0.0008, 22, 0.45);
+  const {ink, lab, sums, sm}=lineArt(data, w, h, amount);
   const cols=sums.map(([sr,sg,sb,cnt])=>{
     let R=sr/cnt, G=sg/cnt, B=sb/cnt;
     const gray=0.299*R+0.587*G+0.114*B, sat=1.28; // 动漫配色更鲜艳
@@ -2123,20 +2155,18 @@ function styleAnime(data, w, h, amount){
     if(hi>0){ R+=(255-R)*hi*0.5; G+=(255-G)*hi*0.5; B+=(255-B)*hi*0.5; }
     return [R,G,B];
   });
-  const out=new Uint8ClampedArray(n*4);
+  const base=new Uint8ClampedArray(n*4);
   for(let i=0;i<n;i++){
-    const p=i*4;
-    if(line[i]){ out[p]=30; out[p+1]=24; out[p+2]=28; } // 近黑细线
-    else { const c=cols[lab[i]]||[255,255,255]; out[p]=c[0]; out[p+1]=c[1]; out[p+2]=c[2]; }
-    out[p+3]=sm[p+3];
+    const p=i*4, c=cols[lab[i]]||[255,255,255];
+    base[p]=c[0]; base[p+1]=c[1]; base[p+2]=c[2]; base[p+3]=sm[p+3];
   }
-  return out;
+  return overlayRGB(base, renderStroke(ink, w, h,
+    {color:[30,24,28], alpha:1.0, thr:0.50, soft:0.14, width:1, grain:0.05, wobble:0.8}));
 }
-/* 蜡笔涂鸦：同样先提轮廓分区，每区平涂（降饱和 + 暖化留白），线画暖棕 */
+/* 蜡笔涂鸦：① 提铅笔线稿 → ② 笔触渲成粗暖棕蜡笔线 → ③ 每区平涂（降饱和 + 暖化留白 + 腮红） */
 function styleCrayon(data, w, h, amount){
   const n=w*h;
-  const sm=boxBlurRGB(data, w, h, 1);
-  const {lab, line, sums}=regionMap(sm, w, h, 0.17 + amount*0.0007, 20, 0.40);
+  const {ink, lab, sums, sm}=lineArt(data, w, h, amount);
   const warm=0.12 + amount*0.0008;
   const cols=sums.map(([sr,sg,sb,cnt])=>{
     let R=sr/cnt, G=sg/cnt, B=sb/cnt;
@@ -2153,20 +2183,15 @@ function styleCrayon(data, w, h, amount){
     }
     return [R,G,B];
   });
-  const out=new Uint8ClampedArray(n*4);
+  const base=new Uint8ClampedArray(n*4);
   for(let i=0;i<n;i++){
     const p=i*4, x=i%w, y=(i/w)|0;
     const gr=(hash2(x,y)-0.5)*2*(1.2+amount*0.012); // 纸纹颗粒
-    if(line[i]){
-      const cov=0.90 + 0.10*valueNoise(x*0.30+2.1, y*0.30); // 笔画浓淡起伏（不断口）
-      out[p]=248*(1-cov)+132*cov; out[p+1]=246*(1-cov)+96*cov; out[p+2]=242*(1-cov)+72*cov;
-    } else {
-      const c=cols[lab[i]]||[250,248,244];
-      out[p]=c[0]+gr; out[p+1]=c[1]+gr; out[p+2]=c[2]+gr*0.7;
-    }
-    out[p+3]=sm[p+3];
+    const c=cols[lab[i]]||[250,248,244];
+    base[p]=c[0]+gr; base[p+1]=c[1]+gr; base[p+2]=c[2]+gr*0.7; base[p+3]=sm[p+3];
   }
-  return out;
+  return overlayRGB(base, renderStroke(ink, w, h,
+    {color:[132,96,72], alpha:0.90, thr:0.40, soft:0.30, width:2, grain:0.18, wobble:1.4}));
 }
 function applyStyle(data, w, h, style, amount){
   if(style==='line') return styleLine(data, w, h, amount);
