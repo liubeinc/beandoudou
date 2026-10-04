@@ -93,7 +93,7 @@
   .seg button:hover{border-color:var(--pri-2)}
   .seg button:active{background:#eef0fe}
   .seg button.on{border-color:var(--pri);background:var(--pri-soft);color:var(--pri);box-shadow:0 0 0 3px rgba(91,108,240,.12)}
-  #style{display:grid;grid-template-columns:repeat(4,1fr)}
+  #style{display:grid;grid-template-columns:repeat(5,1fr)}
   input[type=range]{width:100%;height:26px;-webkit-appearance:none;appearance:none;background:transparent;cursor:pointer;touch-action:pan-y}
   html,body{overscroll-behavior-x:none;touch-action:manipulation}
   input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px;background:linear-gradient(90deg,#d7dcee,#e3e6f2)}
@@ -389,6 +389,8 @@
           <button data-v="ink">水墨</button>
           <button data-v="pencil">彩铅</button>
           <button data-v="oil">油画</button>
+          <button data-v="anime">动漫</button>
+          <button data-v="crayon">蜡笔</button>
         </div>
         <div class="style-strength" id="styleStrength" style="display:none">
           <label>强度 <span class="val" id="styleVal">50</span></label>
@@ -425,6 +427,10 @@
           <button type="button" class="bg-clear" id="bgClear" style="display:none">清除</button>
           <span class="bg-hint" id="bgHint"></span>
         </div>
+      </div>
+
+      <div class="row" id="bgContigRow" style="display:none">
+        <label class="check" title="只删除从画面边缘连成一片的背景；被主体轮廓围住的同色区域（例如白色睡衣、白眼球、白衬衫）会保留"><input type="checkbox" id="bgContig" checked> 只去与画面边缘相连的（保留主体内部同色，如白衣服）</label>
       </div>
 
       <div class="pick-panel" id="pickPanel" style="display:none">
@@ -783,7 +789,7 @@ let appliedGrid=null, appliedW=0, appliedH=0; // 已「应用」的正式网格�
 let showCode=true, showGrid=true;
 let bgColors=[]; // 手动拾取的背景色列表 [{r,g,b},...]，空=未拾取（退回四角自动检测）
 let crop=null; // 裁切区域 {x,y,w,h} 相对原图 0~1 比例, null=全图
-let STYLE='orig'; // 风格预处理：orig 原图 / line 线稿 / sketch 素描 / cartoon 卡通 / water 水彩 / ink 水墨 / pencil 彩铅 / oil 油画（强度实时读滑杆，见 #styleAmount）
+let STYLE='orig'; // 风格预处理：orig 原图 / line 线稿 / sketch 素描 / cartoon 卡通 / water 水彩 / ink 水墨 / pencil 彩铅 / oil 油画 / anime 动漫 / crayon 蜡笔（强度实时读滑杆，见 #styleAmount）
 let previewPending=false, previewRAF=0; // 拖拽预览节流（低清渲染）状态
 let sourceData=null;    // 当前生成所用「采样+风格后」原始像素（w×h RGBA），用于原图对照
 let viewOriginal=false; // true=预览显示原图（未匹配色号），false=显示拼豆图纸
@@ -1018,11 +1024,34 @@ function generate(commit, lowRes){
       corners.forEach(([cx,cy])=>{ const p=(cy*w+cx)*4; if(data[p+3]>=40){ sr+=data[p];sg+=data[p+1];sb+=data[p+2];n++; } });
       if(n) targets=[{r:sr/n,g:sg/n,b:sb/n}];
     }
+    // 先标出所有「颜色上像背景」的格子
+    const hit=new Uint8Array(w*h);
     for(let i=0;i<w*h;i++){
-      if(grid[i]<0) continue;
+      if(grid[i]<0){ hit[i]=2; continue; }  // 透明格：本身已是背景，可被穿过
       const p=i*4;
       const r=data[p],g=data[p+1],b=data[p+2];
-      for(const t of targets){ if(dist(r,g,b,t.r,t.g,t.b)<48){ grid[i]=-1; break; } }
+      for(const t of targets){ if(dist(r,g,b,t.r,t.g,t.b)<48){ hit[i]=1; break; } }
+    }
+    if($('bgContig').checked){
+      // 只删「与画面边缘相连」的背景：从四边泛洪，主体轮廓围住的同色区（白睡衣/白眼球）不会被误删。
+      // 泛洪可以穿过透明格（透明区也是背景的一部分），使被透明区隔开的角落背景仍能删掉。
+      const seen=new Uint8Array(w*h);
+      const q=new Int32Array(w*h); let qh=0,qt=0;
+      const push=i=>{ if(!seen[i] && (hit[i]===1 || hit[i]===2)){ seen[i]=1; q[qt++]=i; } };
+      for(let x=0;x<w;x++){ push(x); push((h-1)*w+x); }
+      for(let y=1;y<h-1;y++){ push(y*w); push(y*w+w-1); }
+      while(qh<qt){
+        const i=q[qh++];
+        if(hit[i]===1) grid[i]=-1;
+        const x=i%w, y=(i/w)|0;
+        if(x+1<w) push(i+1);
+        if(x>0) push(i-1);
+        if(y+1<h) push(i+w);
+        if(y>0) push(i-w);
+      }
+    } else {
+      // 关掉「仅边缘相连」时退回按颜色全局删除（连主体内部的同色一起删）
+      for(let i=0;i<w*h;i++) if(hit[i]===1) grid[i]=-1;
     }
   }
 
@@ -1471,10 +1500,13 @@ bindRange('contrast','conVal',v=>v,lowRes=>schedulePreview(lowRes));
 bindRange('saturation','satVal',v=>v,lowRes=>schedulePreview(lowRes));
 $('keepRatio').addEventListener('change',()=>{ if($('keepRatio').checked && img) syncRatio(true); });
 $('removeBg').addEventListener('change',()=>{
-  $('bgPick').style.display = $('removeBg').checked ? 'flex' : 'none';
-  if($('removeBg').checked) renderBgSwatches();
+  const on=$('removeBg').checked;
+  $('bgPick').style.display = on ? 'flex' : 'none';
+  $('bgContigRow').style.display = on ? 'block' : 'none';
+  if(on) renderBgSwatches();
   generate();
 });
+$('bgContig').addEventListener('change',()=>generate());
 
 /* 手动拾取背景色（可重复）：点「拾取背景色」弹出预览窗 → 在预览窗内连续点背景处，可累计多个色 */
 function readPixel(px,py){
@@ -1556,7 +1588,7 @@ $('pickPanelClose').addEventListener('click',()=>closePickPanel(true));
 pickImg.addEventListener('click',pickFromImg);
 pickUndo.addEventListener('click',()=>{ bgColors.pop(); renderBgSwatches(); generate(false); });
 pickClear.addEventListener('click',()=>{ bgColors=[]; renderBgSwatches(); generate(false); });
-pickDone.addEventListener('click',()=>{ $('removeBg').checked=true; $('bgPick').style.display='flex'; renderBgSwatches(); closePickPanel(true); });
+pickDone.addEventListener('click',()=>{ $('removeBg').checked=true; $('bgPick').style.display='flex'; $('bgContigRow').style.display='block'; renderBgSwatches(); closePickPanel(true); });
 $('dither').addEventListener('change',()=>generate());
 $('flatBg').addEventListener('change',()=>generate());
 const DEFAULTS={ width:60, height:60, colorLimit:48, brightness:0, contrast:0, saturation:0 };
@@ -1903,6 +1935,114 @@ function styleOil(data, w, h, amount){
   }
   return out;
 }
+/* 动漫（赛璐璐）：平滑 → 亮度分档平涂（保色相）+ 提饱和 → 亮部提白高光 → 肤色腮红 → 细硬描边 */
+function styleAnime(data, w, h, amount){
+  const n=w*h;
+  const r=Math.max(1, Math.round(Math.min(w,h)*(0.008 + amount*0.00009)));
+  const sm=boxBlurRGB(data, w, h, r);
+  const levels=Math.max(4, Math.round(7 - amount*0.02)); // 色阶 7→4，越强越平
+  const q=255/(levels-1);
+  const blush=0.10 + amount*0.0012; // 腮红强度
+  const out=new Uint8ClampedArray(n*4), lum=new Float32Array(n);
+  for(let i=0;i<n;i++){
+    const p=i*4;
+    let R=sm[p],G=sm[p+1],B=sm[p+2];
+    const gray=0.299*R+0.587*G+0.114*B, sat=1.32; // 动漫配色更鲜艳
+    R=gray+(R-gray)*sat; G=gray+(G-gray)*sat; B=gray+(B-gray)*sat;
+    let L=0.299*R+0.587*G+0.114*B;
+    // 亮度分档（按亮度缩放 RGB，保留色相）→ 赛璐璐的硬边色块；k 上限防止亮部直接跳白
+    let k=L>1?(Math.round(L/q)*q)/L:1;
+    if(k>1.08) k=1.08;
+    R*=k; G*=k; B*=k;
+    L=0.299*R+0.587*G+0.114*B;
+    // 高光：亮部推向纯白（头发/衣料反光带）
+    const hi=Math.max(0,(L-240)/15);
+    if(hi>0){ R+=(255-R)*hi*0.55; G+=(255-G)*hi*0.55; B+=(255-B)*hi*0.55; }
+    // 腮红：肤色亮部叠柔和粉红（动漫脸的标志特征）
+    if(R>190 && R-B>18 && R-B<110 && G>R*0.70 && G<R*0.96){
+      const t=blush*(0.5 + 0.5*Math.min(1, Math.max(0,(L-150)/70)));
+      R+=(252-R)*t; G+=(178-G)*t*0.75; B+=(186-B)*t*0.75;
+    }
+    out[p]=R; out[p+1]=G; out[p+2]=B; out[p+3]=sm[p+3];
+    lum[i]=0.299*out[p]+0.587*out[p+1]+0.114*out[p+2];
+  }
+  // 细硬描边：阈值高→只勾主轮廓，深棕灰而非死黑
+  const {mag, maxM}=sobelMag(lum, w, h);
+  if(maxM>0){
+    const thr=Math.max(10, maxM*(0.58 - amount*0.0022));
+    for(let i=0;i<n;i++){
+      if(lum[i]<72) continue; // 源图本身的黑线不再加粗（动漫线稿原图常见）
+      let t=mag[i]/thr;
+      if(t<=0.70) continue;
+      t=(t-0.70)/0.30;
+      const cov=(t>=1?1:t*t*(3-2*t))*0.88;
+      if(cov>0.03){
+        const p=i*4;
+        out[p]=out[p]*(1-cov)+42*cov;
+        out[p+1]=out[p+1]*(1-cov)+34*cov;
+        out[p+2]=out[p+2]*(1-cov)+38*cov;
+      }
+    }
+  }
+  return out;
+}
+/* 蜡笔涂鸦：强平滑 → 降饱和提亮暖化（大面积留白）→ 暖色阶量化 → 棕色粗蜡笔轮廓（带断口）→ 纸纹 */
+function styleCrayon(data, w, h, amount){
+  const n=w*h;
+  const r=Math.max(1, Math.round(1 + amount/38));
+  const sm=boxBlurRGB(data, w, h, r);
+  // 轮廓亮度取自「提亮前」的平滑图：留白会把对比度冲掉，用提亮后的亮度就找不到线了
+  const baseG=new Float32Array(n);
+  for(let i=0;i<n;i++){ const p=i*4; baseG[i]=0.299*sm[p]+0.587*sm[p+1]+0.114*sm[p+2]; }
+  const base=boxBlurGray(baseG, w, h, 1); // 再平滑一档，软渐变不产生假轮廓
+  const levels=Math.max(3, Math.round(5 - amount*0.02)); // 3~5 档暖色，越强越简
+  const q=255/(levels-1);
+  const warm=0.10 + amount*0.0010; // 暖化 + 留白强度
+  const out=new Uint8ClampedArray(n*4);
+  for(let i=0;i<n;i++){
+    const p=i*4;
+    let R=sm[p],G=sm[p+1],B=sm[p+2];
+    const gray=0.299*R+0.587*G+0.114*B, sat=0.70; // 蜡笔上色淡
+    R=gray+(R-gray)*sat; G=gray+(G-gray)*sat; B=gray+(B-gray)*sat;
+    // 提亮 + 暖化：R 抬得最多、B 最少 → 米黄纸感
+    R+=(255-R)*warm; G+=(252-G)*(warm*0.92); B+=(240-B)*(warm*0.78);
+    let L=0.299*R+0.587*G+0.114*B;
+    const t=Math.max(0,(L-196)/60); // 亮部直接留白
+    if(t>0){ R+=(252-R)*t; G+=(250-G)*t; B+=(243-B)*t; }
+    // 腮红：暖粉区叠柔和粉红（参考图的标志性大腮红）
+    if(R>200 && R-B>22 && R-B<120 && G>R*0.68 && G<R*0.97){
+      const tt=0.34*(0.5 + 0.5*Math.min(1, Math.max(0,(L-160)/70)));
+      R+=(252-R)*tt; G+=(178-G)*tt*0.8; B+=(188-B)*tt*0.8;
+    }
+    L=0.299*R+0.587*G+0.114*B;
+    let k=L>1?(Math.round(L/q)*q)/L:1;
+    if(k>1.10) k=1.10;
+    R*=k; G*=k; B*=k;
+    const gr=(hash2(i%w, (i/w)|0)-0.5)*2*(1.5+amount*0.015); // 纸纹颗粒
+    out[p]=R+gr; out[p+1]=G+gr; out[p+2]=B+gr*0.7; out[p+3]=sm[p+3];
+  }
+  // 棕色蜡笔粗轮廓：只勾主轮廓（阈值高→不捡背景杂纹），噪声调制→笔画起伏与断口，暖棕而非黑
+  const {mag, maxM}=sobelMag(base, w, h);
+  if(maxM>0){
+    const thr=Math.max(8, maxM*(0.52 - amount*0.0018));
+    for(let i=0;i<n;i++){
+      let t=mag[i]/thr;
+      if(t<=0.45) continue;
+      t=(t-0.45)/0.55;
+      const x=i%w, y=(i/w)|0;
+      let cov=t*t*(3-2*t)*(0.70 + 0.45*valueNoise(x*0.30+2.1, y*0.30));
+      if(valueNoise(x*0.25+13.7, y*0.25+5.3)<0.12) cov*=0.30; // 断口：蜡笔涂不满
+      if(cov>1) cov=1;
+      if(cov>0.03){
+        const p=i*4;
+        out[p]=out[p]*(1-cov)+152*cov;
+        out[p+1]=out[p+1]*(1-cov)+112*cov;
+        out[p+2]=out[p+2]*(1-cov)+86*cov;
+      }
+    }
+  }
+  return out;
+}
 function applyStyle(data, w, h, style, amount){
   if(style==='line') return styleLine(data, w, h, amount);
   if(style==='sketch') return styleSketch(data, w, h, amount);
@@ -1911,6 +2051,8 @@ function applyStyle(data, w, h, style, amount){
   if(style==='ink') return styleInk(data, w, h, amount);
   if(style==='pencil') return stylePencil(data, w, h, amount);
   if(style==='oil') return styleOil(data, w, h, amount);
+  if(style==='anime') return styleAnime(data, w, h, amount);
+  if(style==='crayon') return styleCrayon(data, w, h, amount);
   return data;
 }
 $('style').addEventListener('click',e=>{
@@ -2058,7 +2200,7 @@ function saveSettings(){
     width:+$('width').value, height:+$('height').value,
     keepRatio:$('keepRatio').checked, colorLimit:+$('colorLimit').value,
     shape:$('shape').querySelector('.on').dataset.v,
-    removeBg:$('removeBg').checked, dither:$('dither').checked,
+    removeBg:$('removeBg').checked, bgContig:$('bgContig').checked, dither:$('dither').checked,
     flatBg:$('flatBg').checked,
     brightness:+$('brightness').value, contrast:+$('contrast').value, saturation:+$('saturation').value,
     style:STYLE, styleAmount:+$('styleAmount').value,
@@ -2089,13 +2231,14 @@ function restoreSettings(){
   if(typeof d.keepRatio==='boolean') $('keepRatio').checked=d.keepRatio;
   if(d.colorLimit){ $('colorLimit').value=d.colorLimit; $('colorVal').textContent=d.colorLimit>=48?'不限':d.colorLimit; }
   if(d.shape){ const b=$('shape').querySelector(`[data-v="${d.shape}"]`); if(b){ $('shape').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); } }
-  if(typeof d.removeBg==='boolean'){ $('removeBg').checked=d.removeBg; $('bgPick').style.display = d.removeBg ? 'flex' : 'none'; if(d.removeBg) renderBgSwatches(); }
+  if(typeof d.removeBg==='boolean'){ $('removeBg').checked=d.removeBg; $('bgPick').style.display = d.removeBg ? 'flex' : 'none'; $('bgContigRow').style.display = d.removeBg ? 'block' : 'none'; if(d.removeBg) renderBgSwatches(); }
+  if(typeof d.bgContig==='boolean') $('bgContig').checked=d.bgContig;
   if(typeof d.dither==='boolean') $('dither').checked=d.dither;
   if(typeof d.flatBg==='boolean') $('flatBg').checked=d.flatBg;
   if(d.brightness!=null){ $('brightness').value=d.brightness; $('briVal').textContent=d.brightness; }
   if(d.contrast!=null){ $('contrast').value=d.contrast; $('conVal').textContent=d.contrast; }
   if(d.saturation!=null){ $('saturation').value=d.saturation; $('satVal').textContent=d.saturation; }
-  if(d.style && ['orig','line','sketch','cartoon','water','ink','pencil','oil'].includes(d.style)){
+  if(d.style && ['orig','line','sketch','cartoon','water','ink','pencil','oil','anime','crayon'].includes(d.style)){
     STYLE=d.style;
     const b=$('style').querySelector(`[data-v="${d.style}"]`);
     if(b){ $('style').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); }
@@ -2236,7 +2379,7 @@ $('colorHint').addEventListener('click',e=>{
   const b=e.target.closest('.ch-btn'); if(!b) return;
   if(b.id==='colorHintClose'){ $('colorHint').style.display='none'; return; }
   const act=b.dataset.act;
-  if(act==='removebg'){ $('removeBg').checked=true; $('bgPick').style.display='flex'; renderBgSwatches(); generate(); }
+  if(act==='removebg'){ $('removeBg').checked=true; $('bgPick').style.display='flex'; $('bgContigRow').style.display='block'; renderBgSwatches(); generate(); }
   else if(act==='limit8'){ $('colorLimit').value=8; $('colorVal').textContent='8'; generate(); }
 });
 
