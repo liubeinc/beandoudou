@@ -449,6 +449,11 @@
         <label class="check"><input type="checkbox" id="dither" checked> 抖动优化（照片渐变更细腻）</label>
       </div>
 
+      <div class="row">
+        <label class="check" title="自动识别与画面边缘相连的大面积同色区域，整块用最接近的单一色号平涂，且不参与抖动"><input type="checkbox" id="flatBg"> 背景平涂（大面积色块用单色，不抖动）</label>
+        <span class="bg-hint" id="flatBgHint"></span>
+      </div>
+
       <div class="export-bar" id="exportBar" style="display:none">
         <div class="split-group">
           <div class="split-btn">
@@ -848,6 +853,99 @@ function adjust(r,g,b,bri,con,sat){
   return [Math.max(0,Math.min(255,r)),Math.max(0,Math.min(255,g)),Math.max(0,Math.min(255,b))];
 }
 
+/* 背景自动识别 + 平涂：
+   从画面四边向内做「颜色相近」的区域生长（多源 BFS，每个边界像素带着自己的参考色），
+   再按连通块面积过滤（只保留大面积色块），每块取均值匹配一个最接近的色号。
+   返回 Int32Array：>=0 = 该格属于背景且已定色号（不参与抖动）；-1 = 非背景。
+   全程确定性计算（无随机），同一张图重复渲染结果一致。 */
+function detectBgFlat(data, w, h, bri, con, sat){
+  const n=w*h;
+  const bg=new Uint8Array(n);      // 1 = 从边界可达且颜色相近
+  const ref=new Uint8Array(n*3);   // 该格所属背景区的「种子色」
+  const queue=new Int32Array(n); let qh=0, qt=0;
+  const TOL=24, TOL2=TOL*TOL;      // 与本区种子色的最大色差（含轻微 JPEG 噪声余量）
+  const STEP=12, STEP2=STEP*STEP;  // 与相邻格的色差上限：允许背景自身缓慢渐变，又能把相邻的两种底色分开
+  const seed=i=>{ const p=i*4; if(data[p+3]<40) return;
+    ref[i*3]=data[p]; ref[i*3+1]=data[p+1]; ref[i*3+2]=data[p+2]; bg[i]=1; queue[qt++]=i; };
+  for(let x=0;x<w;x++){ seed(x); seed((h-1)*w+x); }
+  for(let y=1;y<h-1;y++){ seed(y*w); seed(y*w+w-1); }
+  while(qh<qt){
+    const i=queue[qh++], p=i*4, x=i%w, y=(i/w)|0;
+    const rr=ref[i*3], rg=ref[i*3+1], rb=ref[i*3+2];
+    for(let k=0;k<4;k++){
+      const nx=x+(k===0?1:k===1?-1:0), ny=y+(k===2?1:k===3?-1:0);
+      if(nx<0||nx>=w||ny<0||ny>=h) continue;
+      const j=ny*w+nx; if(bg[j]) continue;
+      const pj=j*4; if(data[pj+3]<40) continue;
+      const dr=data[pj]-rr, dg=data[pj+1]-rg, db=data[pj+2]-rb;
+      if(dr*dr+dg*dg+db*db>TOL2) continue;                                  // 与本区种子色差太多 → 不是背景
+      const er=data[pj]-data[p], eg=data[pj+1]-data[p+1], eb=data[pj+2]-data[p+2];
+      if(er*er+eg*eg+eb*eb>STEP2) continue;                                 // 与相邻格有明显边界 → 不是背景
+      ref[j*3]=rr; ref[j*3+1]=rg; ref[j*3+2]=rb; bg[j]=1; queue[qt++]=j;
+    }
+  }
+  // 连通块标记 → 只保留大面积块 → 每块均值定一个色号
+  const comp=new Int32Array(n).fill(-1);
+  const stack=new Int32Array(n);
+  const cells=[];
+  const minArea=Math.max(6, Math.round(n*0.006)); // 小于 0.6% 的碎块不算背景
+  const mr=[], mg=[], mb=[], midx=[];             // 每个保留块的均值色 + 色号
+  for(let s=0;s<n;s++){
+    if(!bg[s]||comp[s]>=0) continue;
+    const id=mr.length;
+    let sp=0; stack[sp++]=s; comp[s]=id; cells.length=0;
+    let sr=0, sg=0, sb=0, cnt=0;
+    while(sp>0){
+      const i=stack[--sp]; cells.push(i);
+      const p=i*4; sr+=data[p]; sg+=data[p+1]; sb+=data[p+2]; cnt++;
+      const x=i%w, y=(i/w)|0;
+      for(let k=0;k<4;k++){
+        const nx=x+(k===0?1:k===1?-1:0), ny=y+(k===2?1:k===3?-1:0);
+        if(nx<0||nx>=w||ny<0||ny>=h) continue;
+        const j=ny*w+nx;
+        // 只把「同一种子色」的格子并进同一块：不同底色即使相邻也各自成块（否则会被平均成第三种颜色）
+        if(bg[j]&&comp[j]<0&&ref[j*3]===ref[i*3]&&ref[j*3+1]===ref[i*3+1]&&ref[j*3+2]===ref[i*3+2]){ comp[j]=id; stack[sp++]=j; }
+      }
+    }
+    if(cnt<minArea){ for(let c=0;c<cells.length;c++) comp[cells[c]]=-1; continue; } // 碎块作废
+    mr.push(sr/cnt); mg.push(sg/cnt); mb.push(sb/cnt);
+    const [ar,ag,ab]=adjust(sr/cnt, sg/cnt, sb/cnt, bri, con, sat);
+    midx.push(matchColor(ar,ag,ab));
+  }
+  const flat=new Int32Array(n).fill(-1);
+  for(let i=0;i<n;i++) if(comp[i]>=0) flat[i]=midx[comp[i]];
+  // 缝隙/花边吸收：降采样会在两块底色交界处留下 1 格宽的混色带，JPEG 压缩又会在主体轮廓外侧
+  // 留下一圈偏色的「花边」——这些格子既没被认成背景、又会参与抖动，在平涂背景上格外显眼。
+  // 这里把「紧贴背景且颜色接近该块均值」的格子逐圈并入背景（最多 3 圈）：
+  // 颜色门槛保证不会吃掉主体（主体颜色离底色很远），只清掉边缘伪影。
+  const TOL_ABS=40, TOL_ABS2=TOL_ABS*TOL_ABS;
+  for(let pass=0;pass<3;pass++){
+    let changed=0;
+    for(let i=0;i<n;i++){
+      if(comp[i]>=0 || data[i*4+3]<40) continue;
+      const x=i%w, y=(i/w)|0, p=i*4;
+      let best=-1, bd=Infinity, nb=0;
+      for(let k=0;k<4;k++){
+        const nx=x+(k===0?1:k===1?-1:0), ny=y+(k===2?1:k===3?-1:0);
+        if(nx<0||nx>=w||ny<0||ny>=h) continue;
+        const cj=comp[ny*w+nx]; if(cj<0) continue;
+        nb++;
+        const dr=data[p]-mr[cj], dg=data[p+1]-mg[cj], db=data[p+2]-mb[cj];
+        const d=dr*dr+dg*dg+db*db; if(d<bd){ bd=d; best=cj; }
+      }
+      if(nb>=2 && bd<=TOL_ABS2){ comp[i]=best; flat[i]=midx[best]; changed++; }
+    }
+    if(!changed) break;
+  }
+  return flat;
+}
+/* 背景平涂的识别结果提示 */
+function updateFlatBgHint(cells, total){
+  const el=$('flatBgHint'); if(!el) return;
+  if(!$('flatBg').checked){ el.textContent=''; return; }
+  el.textContent = cells ? `已识别背景 ${cells} 格（${Math.round(cells/total*100)}%）` : '未识别到大面积背景';
+}
+
 function generate(commit, lowRes){
   if(!img) return;
   if(!lowRes && previewRAF){ cancelAnimationFrame(previewRAF); previewRAF=0; previewPending=false; }
@@ -876,6 +974,14 @@ function generate(commit, lowRes){
   if(STYLE && STYLE!=='orig') data=applyStyle(data, w, h, STYLE, +$('styleAmount').value);
   sourceData = data; // 留存「采样+风格后」原图像素，供原图对照
 
+  // 背景自动识别 + 平涂（可选）：大面积连通色块整块用单一色号，且不参与抖动 → 背景干净无杂色
+  const flatBg = $('flatBg').checked ? detectBgFlat(data, w, h, bri, con, sat) : null;
+  if(flatBg){
+    let bgCells=0;
+    for(let i=0;i<w*h;i++) if(flatBg[i]>=0) bgCells++;
+    updateFlatBgHint(bgCells, w*h);
+  } else updateFlatBgHint(0, w*h);
+
   gridW=w; gridH=h;
   grid=new Array(w*h);
   // 抖动误差缓冲（Floyd-Steinberg 需记录各像素累计 RGB 误差，用 Float32Array 存 r/g/b）
@@ -884,6 +990,7 @@ function generate(commit, lowRes){
     const p=i*4;
     const a=data[p+3];
     if(a<40){ grid[i]=-1; continue; } // 透明/空白
+    if(flatBg && flatBg[i]>=0){ grid[i]=flatBg[i]; continue; } // 背景平涂：单一色号、不累计也不扩散抖动误差
     let r,g,b;
     if(dither){ r=err[i*3]+data[p]; g=err[i*3+1]+data[p+1]; b=err[i*3+2]+data[p+2]; }
     else { r=data[p]; g=data[p+1]; b=data[p+2]; }
@@ -895,8 +1002,8 @@ function generate(commit, lowRes){
       // 量化误差 = 原始(含累计误差) - 匹配色号
       const er=ar-c.r, eg=ag-c.g, eb=ab-c.b;
       const x=i%w, y=(i/w)|0;
-      // Floyd-Steinberg：右7/16 下5/16 左下3/16 右下1/16
-      const spread=(dx,dy,k)=>{ const nx=x+dx, ny=y+dy; if(nx<0||nx>=w||ny<0||ny>=h) return; const ni=ny*w+nx; if(data[ni*4+3]<40) return; err[ni*3]+=er*k; err[ni*3+1]+=eg*k; err[ni*3+2]+=eb*k; };
+      // Floyd-Steinberg：右7/16 下5/16 左下3/16 右下1/16（背景格不接收误差，保持平涂干净）
+      const spread=(dx,dy,k)=>{ const nx=x+dx, ny=y+dy; if(nx<0||nx>=w||ny<0||ny>=h) return; const ni=ny*w+nx; if(data[ni*4+3]<40) return; if(flatBg && flatBg[ni]>=0) return; err[ni*3]+=er*k; err[ni*3+1]+=eg*k; err[ni*3+2]+=eb*k; };
       spread(1,0,7/16); spread(0,1,5/16); spread(-1,1,3/16); spread(1,1,1/16);
     }
   }
@@ -1451,6 +1558,7 @@ pickUndo.addEventListener('click',()=>{ bgColors.pop(); renderBgSwatches(); gene
 pickClear.addEventListener('click',()=>{ bgColors=[]; renderBgSwatches(); generate(false); });
 pickDone.addEventListener('click',()=>{ $('removeBg').checked=true; $('bgPick').style.display='flex'; renderBgSwatches(); closePickPanel(true); });
 $('dither').addEventListener('change',()=>generate());
+$('flatBg').addEventListener('change',()=>generate());
 const DEFAULTS={ width:60, height:60, colorLimit:48, brightness:0, contrast:0, saturation:0 };
 function resetSliders(ids){
   ids.forEach(id=>{ $(id).value=DEFAULTS[id]; });
@@ -1951,6 +2059,7 @@ function saveSettings(){
     keepRatio:$('keepRatio').checked, colorLimit:+$('colorLimit').value,
     shape:$('shape').querySelector('.on').dataset.v,
     removeBg:$('removeBg').checked, dither:$('dither').checked,
+    flatBg:$('flatBg').checked,
     brightness:+$('brightness').value, contrast:+$('contrast').value, saturation:+$('saturation').value,
     style:STYLE, styleAmount:+$('styleAmount').value,
     crop: crop, bgColors: bgColors
@@ -1982,6 +2091,7 @@ function restoreSettings(){
   if(d.shape){ const b=$('shape').querySelector(`[data-v="${d.shape}"]`); if(b){ $('shape').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); } }
   if(typeof d.removeBg==='boolean'){ $('removeBg').checked=d.removeBg; $('bgPick').style.display = d.removeBg ? 'flex' : 'none'; if(d.removeBg) renderBgSwatches(); }
   if(typeof d.dither==='boolean') $('dither').checked=d.dither;
+  if(typeof d.flatBg==='boolean') $('flatBg').checked=d.flatBg;
   if(d.brightness!=null){ $('brightness').value=d.brightness; $('briVal').textContent=d.brightness; }
   if(d.contrast!=null){ $('contrast').value=d.contrast; $('conVal').textContent=d.contrast; }
   if(d.saturation!=null){ $('saturation').value=d.saturation; $('satVal').textContent=d.saturation; }
