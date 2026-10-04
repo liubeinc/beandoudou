@@ -2067,7 +2067,7 @@ function regionMap(data, w, h, frac, minThr, gateFrac, absCap){
     }
     if(b) line[i]=1;
   }
-  return {lab, line, sums, strength, gate};
+  return {lab, line, sums, strength, gate, edge, thr};
 }
 
 /* ============ 风格管线：① 提铅笔线稿 → ② 按风格做笔触 → ③ 处理色块 ============
@@ -2083,11 +2083,53 @@ function lineArt(data, w, h, amount){
   const sm=boxBlurRGB(data, w, h, 1);              // 先平滑再求梯度，脊线才稳
   const frac=0.20 + amount*0.0009;                 // 强度↑ → 分位阈降 → 线更多
   const absCap=170 - amount;                       // 强度↑ → 绝对上限也降（照片上分位阈已被上限接管，靠它调浓淡）
-  const {lab, line, sums, strength, gate}=regionMap(sm, w, h, frac, 20, 0.42, absCap);
+  const {lab, line, sums, strength, gate, edge, thr}=regionMap(sm, w, h, frac, 20, 0.42, absCap);
   const ink=new Float32Array(n);
   const g=Math.max(1e-3, gate);                    // 平坦图 gate 可能极小，兜底防止除零
+  // 开放式特征（鼻/嘴/发丝）只对「干净插画」补线：纹理密集的照片脊线占比高（实测 30%+ vs 插画 6%），
+  // 补进来整张都是噪点。用脊线密度区分：干净插画才开特征补线，照片只保留闭合轮廓（轮廓已由 absCap 保证）。
+  let edgeCnt=0; for(let i=0;i<n;i++) if(edge[i]) edgeCnt++;
+  const cleanArt = edgeCnt < n*0.15;
+  const featThr = cleanArt ? thr*2.2 : Infinity;
+  // 第一遍：标出「区域内开放式特征」候选（鼻/嘴/发丝）——
+  // 跳过区域分隔脊线（已被边界 line 画过，再画会加粗成 2 格），判断 8 邻域标签是否全相同。
+  const feat=new Uint8Array(n);
   for(let i=0;i<n;i++){
-    if(!line[i]) continue;
+    if(line[i] || !edge[i] || strength[i]<featThr) continue;
+    const x=i%w, y=(i/w)|0;
+    let l0=-2, distinct=false;
+    for(let dy=-1;dy<=1&&!distinct;dy++){ const ny=y+dy; if(ny<0||ny>=h) continue;
+      for(let dx=-1;dx<=1;dx++){ if(!dx&&!dy) continue;
+        const nx=x+dx; if(nx<0||nx>=w) continue;
+        const L=lab[ny*w+nx]; if(L<0) continue;
+        if(l0===-2) l0=L; else if(L!==l0){ distinct=true; break; }
+      }
+    }
+    if(!distinct) feat[i]=1;
+  }
+  // 第二遍：连通分量（8 邻域），只保留足够长的曲线——鼻/嘴是 8~15 格的弧，
+  // 而斑点、草叶、照片纹理都是 1~3 格的碎点，按长度直接滤掉。
+  const minLen=Math.max(5, Math.round(Math.min(w,h)*0.07));
+  const keep=new Uint8Array(n), seen=new Uint8Array(n), stack=new Int32Array(n);
+  for(let i=0;i<n;i++){
+    if(!feat[i] || seen[i]) continue;
+    let sp=0; stack[sp++]=i; seen[i]=1; const cells=[i];
+    for(let k=0;k<sp;k++){
+      const c0=stack[k], x=c0%w, y=(c0/w)|0;
+      for(let dy=-1;dy<=1;dy++){ const ny=y+dy; if(ny<0||ny>=h) continue;
+        for(let dx=-1;dx<=1;dx++){ if(!dx&&!dy) continue;
+          const nx=x+dx; if(nx<0||nx>=w) continue;
+          const j=ny*w+nx; if(feat[j]&&!seen[j]){ seen[j]=1; stack[sp++]=j; cells.push(j); }
+        }
+      }
+    }
+    if(cells.length>=minLen) for(let k=0;k<cells.length;k++) keep[cells[k]]=1;
+  }
+  for(let i=0;i<n;i++){
+    // 线 = 区域边界（闭合主体轮廓）∪ 足够长的区域内开放脊线。
+    // 只拿边界会丢开放式曲线——鼻尖的 U 形弧不围成任何区域，永远成不了「区域边界」，
+    // 但它是有真实梯度的特征，必须从脊线补进来（这就是「主体轮廓+面部特征不完整」的根因）。
+    if(!line[i] && !keep[i]) continue;
     const x=i%w, y=(i/w)|0;
     const press=0.50 + 0.50*valueNoise(x*0.33+2.2, y*0.33);  // 笔压起伏
     const grain=0.70 + 0.30*hash2(x*2+3, y*2+7);             // 颗粒密度
@@ -2217,8 +2259,7 @@ $('style').addEventListener('click',e=>{
   b.classList.add('on');
   STYLE=b.dataset.v;
   $('styleStrength').style.display = STYLE==='orig' ? 'none' : 'block';
-  // 转换风格后默认预览「风格原图」（未匹配色号），方便看风格效果；选回「原图」则回到图纸
-  setOriginalView(STYLE!=='orig');
+  // 切换风格不重置图纸/原图对照，尊重用户上次的手动选择（默认是图纸）
   saveSettings();
   if(img) generate();
 });
@@ -2401,8 +2442,8 @@ function restoreSettings(){
     if(b){ $('style').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); }
   }
   if(d.styleAmount!=null){ $('styleAmount').value=d.styleAmount; $('styleVal').textContent=d.styleAmount; }
-  // 图纸/原图对照：记住上次选择（选了风格默认切「风格原图」，但用户手动切回图纸后要尊重这个选择）
-  setOriginalView(typeof d.viewOriginal==='boolean' ? d.viewOriginal : STYLE!=='orig');
+  // 图纸/原图对照：记住上次选择；默认「图纸」（不再因选风格自动跳「风格原图」）
+  setOriginalView(typeof d.viewOriginal==='boolean' ? d.viewOriginal : false);
   $('styleStrength').style.display = STYLE==='orig' ? 'none' : 'block';
   if(d.crop){ crop=d.crop; cropToggle.textContent='重新裁切'; }
   if(Array.isArray(d.bgColors)){ bgColors=d.bgColors; renderBgSwatches(); }
