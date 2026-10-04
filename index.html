@@ -1910,7 +1910,7 @@ function sobelRGBmax(data, w, h){
 }
 /* 先提轮廓再分区：梯度脊线（非极大抑制 + 补洞）作分隔 → 4 邻域标记连通区 → 取「相邻区域不同」处为线。
    线由区域边界得出，因此**天然闭合**，不会出现断点；且线宽固定 1 格。 */
-function regionMap(data, w, h, frac, minThr, gateFrac){
+function regionMap(data, w, h, frac, minThr, gateFrac, absCap){
   const n=w*h;
   const {mag, gxs, gys, maxM}=sobelRGBmax(data, w, h);
   const edge=new Uint8Array(n);
@@ -1922,6 +1922,11 @@ function regionMap(data, w, h, frac, minThr, gateFrac){
     for(let i=0;i<n;i++){ let b=(mag[i]/maxM*255)|0; if(b>255) b=255; H[b]++; }
     const target=n*frac; let acc=0;
     for(let b=255;b>=0;b--){ acc+=H[b]; if(acc>=target){ thr=Math.max(minThr, b/255*maxM); break; } }
+    // 绝对上限兜底。纹理密集的照片（反光背心、人群、树叶、砖墙）里「强」梯度像素占比极高，
+    // 分位阈会被抬到很离谱的高度——实测 100×62 的工人照在 frac=0.20 下 thr=255（maxM 才 644），
+    // 主体轮廓全部掉线，只剩反光条。用绝对上限把阈值压回来，主体轮廓才留得住；
+    // 平坦插画的分位阈本来就低于上限，不受影响（所以动漫/蜡笔那套调参原样保留）。
+    if(absCap!=null && thr>absCap) thr=absCap;
     for(let y=0;y<h;y++){
       for(let x=0;x<w;x++){
         const i=y*w+x, m=mag[i];
@@ -2077,7 +2082,8 @@ function lineArt(data, w, h, amount){
   const n=w*h;
   const sm=boxBlurRGB(data, w, h, 1);              // 先平滑再求梯度，脊线才稳
   const frac=0.20 + amount*0.0009;                 // 强度↑ → 分位阈降 → 线更多
-  const {lab, line, sums, strength, gate}=regionMap(sm, w, h, frac, 20, 0.42);
+  const absCap=170 - amount;                       // 强度↑ → 绝对上限也降（照片上分位阈已被上限接管，靠它调浓淡）
+  const {lab, line, sums, strength, gate}=regionMap(sm, w, h, frac, 20, 0.42, absCap);
   const ink=new Float32Array(n);
   const g=Math.max(1e-3, gate);                    // 平坦图 gate 可能极小，兜底防止除零
   for(let i=0;i<n;i++){
@@ -2230,6 +2236,7 @@ $('toggleOriginal').addEventListener('click',function(){
   if(!img) return;
   setOriginalView(!viewOriginal);
   renderPreview(false);
+  saveSettings(); // 记住这次选择，刷新后保持
 });
 $('toggleCode').addEventListener('click',function(){
   showCode=!showCode; this.classList.toggle('on',showCode); renderPreview(false);
@@ -2353,7 +2360,7 @@ function saveSettings(){
     removeBg:$('removeBg').checked, bgContig:$('bgContig').checked, dither:$('dither').checked,
     flatBg:$('flatBg').checked,
     brightness:+$('brightness').value, contrast:+$('contrast').value, saturation:+$('saturation').value,
-    style:STYLE, styleAmount:+$('styleAmount').value,
+    style:STYLE, styleAmount:+$('styleAmount').value, viewOriginal:viewOriginal,
     crop: crop, bgColors: bgColors
   };
   try{ localStorage.setItem(LS_KEY, JSON.stringify(data)); }catch(e){}
@@ -2394,6 +2401,8 @@ function restoreSettings(){
     if(b){ $('style').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); }
   }
   if(d.styleAmount!=null){ $('styleAmount').value=d.styleAmount; $('styleVal').textContent=d.styleAmount; }
+  // 图纸/原图对照：记住上次选择（选了风格默认切「风格原图」，但用户手动切回图纸后要尊重这个选择）
+  setOriginalView(typeof d.viewOriginal==='boolean' ? d.viewOriginal : STYLE!=='orig');
   $('styleStrength').style.display = STYLE==='orig' ? 'none' : 'block';
   if(d.crop){ crop=d.crop; cropToggle.textContent='重新裁切'; }
   if(Array.isArray(d.bgColors)){ bgColors=d.bgColors; renderBgSwatches(); }
