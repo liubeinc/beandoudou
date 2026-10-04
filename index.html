@@ -1986,58 +1986,51 @@ function styleAnime(data, w, h, amount){
   }
   return out;
 }
-/* 蜡笔涂鸦：强平滑 → 降饱和提亮暖化（大面积留白）→ 暖色阶量化 → 棕色粗蜡笔轮廓（带断口）→ 纸纹 */
+/* 蜡笔涂鸦：原图色轻降饱和 + 提亮暖化（大面积留白）→ 棕色蜡笔轮廓（取自原图深色线条，保形）→ 纸纹 */
 function styleCrayon(data, w, h, amount){
   const n=w*h;
-  const r=Math.max(1, Math.round(1 + amount/38));
-  const sm=boxBlurRGB(data, w, h, r);
-  // 轮廓亮度取自「提亮前」的平滑图：留白会把对比度冲掉，用提亮后的亮度就找不到线了
-  const baseG=new Float32Array(n);
-  for(let i=0;i<n;i++){ const p=i*4; baseG[i]=0.299*sm[p]+0.587*sm[p+1]+0.114*sm[p+2]; }
-  const base=boxBlurGray(baseG, w, h, 1); // 再平滑一档，软渐变不产生假轮廓
-  const levels=Math.max(3, Math.round(5 - amount*0.02)); // 3~5 档暖色，越强越简
-  const q=255/(levels-1);
-  const warm=0.10 + amount*0.0010; // 暖化 + 留白强度
+  // 轮廓掩码取自「原始」网格像素：只轻微去噪，形状不糊；源图本身的深色线条直接变成棕色蜡笔线
+  const raw=new Float32Array(n);
+  for(let i=0;i<n;i++){ const p=i*4; raw[i]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2]; }
+  const base=boxBlurGray(raw, w, h, 1);
+  const sm=boxBlurRGB(data, w, h, 1);
+  const warm=0.12 + amount*0.0008; // 暖化 + 留白强度
   const out=new Uint8ClampedArray(n*4);
   for(let i=0;i<n;i++){
     const p=i*4;
     let R=sm[p],G=sm[p+1],B=sm[p+2];
-    const gray=0.299*R+0.587*G+0.114*B, sat=0.70; // 蜡笔上色淡
+    const gray=0.299*R+0.587*G+0.114*B, sat=0.72; // 蜡笔上色淡
     R=gray+(R-gray)*sat; G=gray+(G-gray)*sat; B=gray+(B-gray)*sat;
     // 提亮 + 暖化：R 抬得最多、B 最少 → 米黄纸感
-    R+=(255-R)*warm; G+=(252-G)*(warm*0.92); B+=(240-B)*(warm*0.78);
+    R+=(255-R)*warm; G+=(252-G)*(warm*0.90); B+=(238-B)*(warm*0.72);
     let L=0.299*R+0.587*G+0.114*B;
-    const t=Math.max(0,(L-196)/60); // 亮部直接留白
-    if(t>0){ R+=(252-R)*t; G+=(250-G)*t; B+=(243-B)*t; }
+    const t=Math.max(0,(L-200)/55); // 亮部留白
+    if(t>0){ R+=(252-R)*t*0.85; G+=(250-G)*t*0.85; B+=(242-B)*t*0.85; }
     // 腮红：暖粉区叠柔和粉红（参考图的标志性大腮红）
     if(R>200 && R-B>22 && R-B<120 && G>R*0.68 && G<R*0.97){
-      const tt=0.34*(0.5 + 0.5*Math.min(1, Math.max(0,(L-160)/70)));
+      const tt=0.30*(0.5 + 0.5*Math.min(1, Math.max(0,(L-160)/70)));
       R+=(252-R)*tt; G+=(178-G)*tt*0.8; B+=(188-B)*tt*0.8;
     }
-    L=0.299*R+0.587*G+0.114*B;
-    let k=L>1?(Math.round(L/q)*q)/L:1;
-    if(k>1.10) k=1.10;
-    R*=k; G*=k; B*=k;
-    const gr=(hash2(i%w, (i/w)|0)-0.5)*2*(1.5+amount*0.015); // 纸纹颗粒
+    const gr=(hash2(i%w, (i/w)|0)-0.5)*2*(1.2+amount*0.012); // 纸纹颗粒
     out[p]=R+gr; out[p+1]=G+gr; out[p+2]=B+gr*0.7; out[p+3]=sm[p+3];
   }
-  // 棕色蜡笔粗轮廓：只勾主轮廓（阈值高→不捡背景杂纹），噪声调制→笔画起伏与断口，暖棕而非黑
+  // 棕色蜡笔轮廓：只勾原图的强线条（阈值高→色块交界不变成线），暖棕而非黑，笔画有起伏
   const {mag, maxM}=sobelMag(base, w, h);
   if(maxM>0){
-    const thr=Math.max(8, maxM*(0.52 - amount*0.0018));
+    const thr=Math.max(10, maxM*(0.58 - amount*0.0016));
     for(let i=0;i<n;i++){
       let t=mag[i]/thr;
-      if(t<=0.45) continue;
-      t=(t-0.45)/0.55;
+      if(t<=0.50) continue;
+      t=(t-0.50)/0.50;
       const x=i%w, y=(i/w)|0;
-      let cov=t*t*(3-2*t)*(0.70 + 0.45*valueNoise(x*0.30+2.1, y*0.30));
-      if(valueNoise(x*0.25+13.7, y*0.25+5.3)<0.12) cov*=0.30; // 断口：蜡笔涂不满
+      let cov=t*t*(3-2*t)*(0.72 + 0.40*valueNoise(x*0.30+2.1, y*0.30));
+      if(valueNoise(x*0.22+13.7, y*0.22+5.3)<0.10) cov*=0.45; // 轻微断口：蜡笔涂不满
       if(cov>1) cov=1;
       if(cov>0.03){
         const p=i*4;
-        out[p]=out[p]*(1-cov)+152*cov;
+        out[p]=out[p]*(1-cov)+150*cov;
         out[p+1]=out[p+1]*(1-cov)+112*cov;
-        out[p+2]=out[p+2]*(1-cov)+86*cov;
+        out[p+2]=out[p+2]*(1-cov)+88*cov;
       }
     }
   }
