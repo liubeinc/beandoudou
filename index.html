@@ -1819,12 +1819,16 @@ function styleInk(data, w, h, amount){
   const T0=T-0.48;               // 全墨阈值
   const levels=Math.max(5, Math.round(9 - amount*0.04));
   const q=255/(levels-1);
+  // 飞白（干笔擦痕）：幅度随强度增长，且只在有笔触的边缘显现——平坦墨色保持干净，不再全场撒点
+  const fly=0.05 + amount*0.0035;                 // amount 0→0.05，100→0.30（原为固定 0.20 满幅）
+  const edgeThr=maxM>0 ? maxM*(0.30 - amount*0.0016) : Infinity;
   const out=new Uint8ClampedArray(n*4);
   for(let i=0;i<n;i++){
     let d=(T - sm[i]/255)/(T-T0);  // 墨色浓度
     if(d<0)d=0; else if(d>1)d=1;
-    if(d>0.05){ // 飞白：干笔横向擦痕
-      d*=0.80 + 0.40*valueNoise((i%w)*0.12, ((i/w)|0)*0.6);
+    if(d>0.05){ // 飞白：干笔横向擦痕（边缘全幅、平坦区仅 12% 微弱纹理，不再全场撒点）
+      const e=mag[i]>=edgeThr ? 1 : 0.12;
+      d*=1 - fly*e + 2*fly*e*valueNoise((i%w)*0.12, ((i/w)|0)*0.6);
       if(d>1)d=1;
     }
     const ink=Math.round((1-d)*255/q)*q;
