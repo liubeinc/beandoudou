@@ -1953,15 +1953,20 @@ function sobelRGBmax(data, w, h){
     } }
   return {mag, gxs, gys, maxM};
 }
-/* 动漫（赛璐璐）：先提轮廓（细化成 1 格宽的线），再把轮廓切出的连通区各自平涂成单一颜色 */
-function styleAnime(data, w, h, amount){
+/* 先提轮廓再分区：梯度脊线（非极大抑制 + 补洞）作分隔 → 4 邻域标记连通区 → 取「相邻区域不同」处为线。
+   线由区域边界得出，因此**天然闭合**，不会出现断点；且线宽固定 1 格。 */
+function regionMap(data, w, h, frac, minThr, gateFrac){
   const n=w*h;
-  const sm=boxBlurRGB(data, w, h, 1);
-  // 1) 轮廓：彩色梯度 + 非极大抑制（沿梯度方向取脊线）→ 细且干净的线
-  const {mag, gxs, gys, maxM}=sobelRGBmax(sm, w, h);
+  const {mag, gxs, gys, maxM}=sobelRGBmax(data, w, h);
   const edge=new Uint8Array(n);
+  let thr=minThr;
   if(maxM>0){
-    const thr=Math.max(18, maxM*(0.42 - amount*0.0018));
+    // 阈值取「梯度幅值的分位数」而非 maxM 的比例：整图最大梯度由最强的那条边（如深发丝贴白底）
+    // 决定，按比例定阈会让眼睛、刘海这类较弱但真实的边界全部掉线 → 区域糊成一片。
+    const H=new Int32Array(256);
+    for(let i=0;i<n;i++){ let b=(mag[i]/maxM*255)|0; if(b>255) b=255; H[b]++; }
+    const target=n*frac; let acc=0;
+    for(let b=255;b>=0;b--){ acc+=H[b]; if(acc>=target){ thr=Math.max(minThr, b/255*maxM); break; } }
     for(let y=0;y<h;y++){
       for(let x=0;x<w;x++){
         const i=y*w+x, m=mag[i];
@@ -1976,148 +1981,188 @@ function styleAnime(data, w, h, amount){
       }
     }
   }
-  // 1b) 轮廓加粗 1 格只用于「分隔区域」：细线常有断口，直接拿细线切区域会漏成一片
-  const dil=new Uint8Array(n);
+  // 脊线补洞：NMS 出来的线会有「马步」断口（如 (0,0)→(1,2)），4 邻域泛洪能从缺口钻过去。
+  // 给距离 2 的脊点对补上中点，线就变成真正 4 邻域不可穿的分隔线——不用再膨胀（膨胀会把眼睛、
+  // 嘴这类只有几格的小色块整个吃掉）。
+  const bridges=[];
   for(let y=0;y<h;y++){
     for(let x=0;x<w;x++){
       if(!edge[y*w+x]) continue;
-      for(let dy=-1;dy<=1;dy++){ const ny=y+dy; if(ny<0||ny>=h) continue;
-        for(let dx=-1;dx<=1;dx++){ const nx=x+dx; if(nx<0||nx>=w) continue; dil[ny*w+nx]=1; } }
-    }
-  }
-  const out=new Uint8ClampedArray(n*4);
-  const lab=new Int32Array(n).fill(-1);
-  const q=new Int32Array(n);
-  const cols=[];
-  for(let i=0;i<n;i++){
-    if(dil[i] || lab[i]>=0) continue;
-    let qh=0, qt=0; q[qt++]=i; lab[i]=cols.length;
-    let sr=0,sg=0,sb=0,cnt=0;
-    while(qh<qt){
-      const k=q[qh++], p=k*4;
-      sr+=sm[p]; sg+=sm[p+1]; sb+=sm[p+2]; cnt++;
-      const x=k%w, y=(k/w)|0;
-      // 8 邻域：斜向的轮廓线也能挡住泛洪，区域不会被漏成一片
-      for(let dy=-1;dy<=1;dy++){
+      for(let dy=-2;dy<=2;dy++){
         const ny=y+dy; if(ny<0||ny>=h) continue;
-        for(let dx=-1;dx<=1;dx++){
-          if(!dx&&!dy) continue;
+        for(let dx=-2;dx<=2;dx++){
+          if(Math.max(Math.abs(dx),Math.abs(dy))!==2) continue;
           const nx=x+dx; if(nx<0||nx>=w) continue;
-          const j=ny*w+nx; if(!dil[j]&&lab[j]<0){ lab[j]=cols.length; q[qt++]=j; }
+          if(!edge[ny*w+nx]) continue;
+          bridges.push((y+(dy>0?1:dy<0?-1:0))*w + (x+(dx>0?1:dx<0?-1:0)));
         }
       }
     }
+  }
+  for(let k=0;k<bridges.length;k++){ const b=bridges[k]; if(b>=0&&b<n) edge[b]=1; }
+  const lab=new Int32Array(n).fill(-1);
+  const q=new Int32Array(n);
+  const sums=[];
+  for(let i=0;i<n;i++){
+    if(edge[i] || lab[i]>=0) continue;
+    const id=sums.length;
+    let qh=0, qt=0; q[qt++]=i; lab[i]=id;
+    let sr=0,sg=0,sb=0,cnt=0;
+    while(qh<qt){
+      const k=q[qh++], p=k*4;
+      sr+=data[p]; sg+=data[p+1]; sb+=data[p+2]; cnt++;
+      const x=k%w, y=(k/w)|0;
+      // 4 邻域：与 4 邻域不可穿的脊线配对，区域既不漏穿也不会被吃掉
+      if(x>0){ const j=k-1; if(!edge[j]&&lab[j]<0){ lab[j]=id; q[qt++]=j; } }
+      if(x<w-1){ const j=k+1; if(!edge[j]&&lab[j]<0){ lab[j]=id; q[qt++]=j; } }
+      if(y>0){ const j=k-w; if(!edge[j]&&lab[j]<0){ lab[j]=id; q[qt++]=j; } }
+      if(y<h-1){ const j=k+w; if(!edge[j]&&lab[j]<0){ lab[j]=id; q[qt++]=j; } }
+    }
+    sums.push([sr,sg,sb,cnt]);
+  }
+  // 脊线上的格归入最近的有标签区域（线本身画在这些格上）
+  for(let pass=0;pass<4;pass++){
+    let ch=0;
+    for(let i=0;i<n;i++){
+      if(lab[i]>=0) continue;
+      const x=i%w, y=(i/w)|0;
+      for(let dy=-1;dy<=1&&lab[i]<0;dy++){
+        const ny=y+dy; if(ny<0||ny>=h) continue;
+        for(let dx=-1;dx<=1;dx++){
+          const nx=x+dx; if(nx<0||nx>=w) continue;
+          const j=ny*w+nx; if(lab[j]>=0){ lab[i]=lab[j]; ch++; break; }
+        }
+      }
+    }
+    if(!ch) break;
+  }
+  // 小碎块（面积不足）并入颜色最接近的邻居：否则褶皱/噪点切出的 1~3 格孤立区会变成黑麻点
+  const minArea=Math.max(3, Math.round(n*0.0008));
+  const parent=new Int32Array(sums.length);
+  for(let i=0;i<parent.length;i++) parent[i]=i;
+  const find=a=>{ while(parent[a]!==a){ parent[a]=parent[parent[a]]; a=parent[a]; } return a; };
+  const adj=[]; for(let i=0;i<sums.length;i++) adj.push(new Set());
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const a=lab[y*w+x]; if(a<0) continue;
+      const nb=[[x+1,y],[x-1,y+1],[x,y+1],[x+1,y+1]];
+      for(let k=0;k<4;k++){
+        const nx=nb[k][0], ny=nb[k][1];
+        if(nx<0||nx>=w||ny<0||ny>=h) continue;
+        const b=lab[ny*w+nx]; if(b<0||b===a) continue;
+        adj[a].add(b); adj[b].add(a);
+      }
+    }
+  }
+  const meanOf=id=>{ const s=sums[id]; return [s[0]/s[3], s[1]/s[3], s[2]/s[3]]; };
+  const small=[];
+  for(let i=0;i<sums.length;i++) if(sums[i][3]<minArea) small.push(i);
+  small.sort((a,b)=>sums[a][3]-sums[b][3]);
+  let mergedAny=false;
+  for(const id of small){
+    const ra=find(id); if(sums[ra][3]>=minArea) continue;
+    let best=-1, bd=Infinity;
+    const ma=meanOf(ra);
+    for(const nb0 of adj[id]){
+      const rb=find(nb0); if(rb===ra) continue;
+      const mb=meanOf(rb);
+      const dr=ma[0]-mb[0], dg=ma[1]-mb[1], db=ma[2]-mb[2];
+      const d=dr*dr+dg*dg+db*db;
+      if(d<bd){ bd=d; best=rb; }
+    }
+    if(best<0) continue;
+    parent[ra]=best;
+    const s=sums[best]; s[0]+=sums[ra][0]; s[1]+=sums[ra][1]; s[2]+=sums[ra][2]; s[3]+=sums[ra][3];
+    mergedAny=true;
+  }
+  if(mergedAny) for(let i=0;i<n;i++){ const L=lab[i]; if(L>=0) lab[i]=find(L); }
+  // 线 = 区域边界，但只在「附近确实有强边缘」处画（梯度幅值取 8 邻域最大值，门槛低于脊线阈值）。
+  // 用梯度而不是「两区均色差」：白熊贴白底时两区均色几乎一样，可源图那条棕色描边是真实边缘，
+  // 用均色差会把熊的轮廓整条判掉；软渐变里被切出的区域边界则会因附近无强边缘而不画，避免麻点。
+  const strength=new Float32Array(n);
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      let m=0;
+      for(let dy=-1;dy<=1;dy++){ const ny=y+dy; if(ny<0||ny>=h) continue;
+        for(let dx=-1;dx<=1;dx++){ const nx=x+dx; if(nx<0||nx>=w) continue;
+          const v=mag[ny*w+nx]; if(v>m) m=v; } }
+      strength[y*w+x]=m;
+    }
+  }
+  const gate=Math.max(minThr*0.5, thr*gateFrac);
+  const line=new Uint8Array(n);
+  for(let i=0;i<n;i++){
+    const L=lab[i];
+    if(L<0){ line[i]=1; continue; }
+    if(strength[i]<gate) continue;
+    const x=i%w, y=(i/w)|0;
+    let b=false;
+    for(let dy=-1;dy<=1&&!b;dy++){
+      const ny=y+dy; if(ny<0||ny>=h) continue;
+      for(let dx=-1;dx<=1;dx++){
+        if(!dx&&!dy) continue;
+        const nx=x+dx; if(nx<0||nx>=w) continue;
+        if(lab[ny*w+nx]>L){ b=true; break; }
+      }
+    }
+    if(b) line[i]=1;
+  }
+  return {lab, line, sums};
+}
+/* 动漫（赛璐璐）：先按轮廓切出区域（线闭合、1 格宽），每区取均值整块平涂 */
+function styleAnime(data, w, h, amount){
+  const n=w*h;
+  const sm=boxBlurRGB(data, w, h, 1);
+  const {lab, line, sums}=regionMap(sm, w, h, 0.22 + amount*0.0008, 22, 0.45);
+  const cols=sums.map(([sr,sg,sb,cnt])=>{
     let R=sr/cnt, G=sg/cnt, B=sb/cnt;
     const gray=0.299*R+0.587*G+0.114*B, sat=1.28; // 动漫配色更鲜艳
     R=gray+(R-gray)*sat; G=gray+(G-gray)*sat; B=gray+(B-gray)*sat;
     const L=0.299*R+0.587*G+0.114*B;
-    const hi=Math.max(0,(L-246)/9); // 高亮部微推白（头发/衣料反光带），阈值高以免整片脸变白
+    const hi=Math.max(0,(L-246)/9); // 极亮部微推白（头发/衣料反光带）
     if(hi>0){ R+=(255-R)*hi*0.5; G+=(255-G)*hi*0.5; B+=(255-B)*hi*0.5; }
-    cols.push([R,G,B]);
-  }
-  // 回填：细线画墨；「加粗环」上不属于细线的格取邻近区域色，保证可见的线仍是 1 格宽
+    return [R,G,B];
+  });
+  const out=new Uint8ClampedArray(n*4);
   for(let i=0;i<n;i++){
     const p=i*4;
-    if(edge[i]){ out[p]=30; out[p+1]=24; out[p+2]=28; }
-    else if(lab[i]>=0){ const c=cols[lab[i]]; out[p]=c[0]; out[p+1]=c[1]; out[p+2]=c[2]; }
-    else {
-      const x=i%w, y=(i/w)|0; let c=null;
-      for(let dy=-1;dy<=1&&!c;dy++){ const ny=y+dy; if(ny<0||ny>=h) continue;
-        for(let dx=-1;dx<=1;dx++){ const nx=x+dx; if(nx<0||nx>=w) continue;
-          const j=ny*w+nx; if(lab[j]>=0){ c=cols[lab[j]]; break; } } }
-      if(c){ out[p]=c[0]; out[p+1]=c[1]; out[p+2]=c[2]; }
-      else { out[p]=30; out[p+1]=24; out[p+2]=28; }
-    }
+    if(line[i]){ out[p]=30; out[p+1]=24; out[p+2]=28; } // 近黑细线
+    else { const c=cols[lab[i]]||[255,255,255]; out[p]=c[0]; out[p+1]=c[1]; out[p+2]=c[2]; }
     out[p+3]=sm[p+3];
   }
   return out;
 }
-/* 蜡笔涂鸦：先提棕色蜡笔轮廓，再把轮廓切出的连通区各自平涂（降饱和 + 暖化留白）→ 纸纹 */
+/* 蜡笔涂鸦：同样先提轮廓分区，每区平涂（降饱和 + 暖化留白），线画暖棕 */
 function styleCrayon(data, w, h, amount){
   const n=w*h;
   const sm=boxBlurRGB(data, w, h, 1);
-  // 1) 轮廓：彩色梯度 + 非极大抑制 → 细线；阈值高只勾主轮廓，不捡背景软渐变
-  const {mag, gxs, gys, maxM}=sobelRGBmax(sm, w, h);
-  const edge=new Uint8Array(n);
-  if(maxM>0){
-    const thr=Math.max(14, maxM*(0.40 - amount*0.0014));
-    for(let y=0;y<h;y++){
-      for(let x=0;x<w;x++){
-        const i=y*w+x, m=mag[i];
-        if(m<thr) continue;
-        const ax=Math.abs(gxs[i]), ay=Math.abs(gys[i]);
-        let n1, n2;
-        if(ax>=ay*2.414){ n1=x>0?mag[i-1]:0; n2=x<w-1?mag[i+1]:0; }
-        else if(ay>=ax*2.414){ n1=y>0?mag[i-w]:0; n2=y<h-1?mag[i+w]:0; }
-        else if((gxs[i]>0)===(gys[i]>0)){ n1=(x>0&&y>0)?mag[i-w-1]:0; n2=(x<w-1&&y<h-1)?mag[i+w+1]:0; }
-        else { n1=(x<w-1&&y>0)?mag[i-w+1]:0; n2=(x>0&&y<h-1)?mag[i+w-1]:0; }
-        if(m>=n1 && m>=n2) edge[i]=1;
-      }
-    }
-  }
-  // 1b) 蜡笔线比动漫粗：用加粗 1 格的掩码当墨线，同时作为区域分隔
-  const dil=new Uint8Array(n);
-  for(let y=0;y<h;y++){
-    for(let x=0;x<w;x++){
-      if(!edge[y*w+x]) continue;
-      for(let dy=-1;dy<=1;dy++){ const ny=y+dy; if(ny<0||ny>=h) continue;
-        for(let dx=-1;dx<=1;dx++){ const nx=x+dx; if(nx<0||nx>=w) continue; dil[ny*w+nx]=1; } }
-    }
-  }
-  // 2) 平涂：每区取均值 → 降饱和 + 暖化提亮（大面积留白）
+  const {lab, line, sums}=regionMap(sm, w, h, 0.17 + amount*0.0007, 20, 0.40);
   const warm=0.12 + amount*0.0008;
-  const out=new Uint8ClampedArray(n*4);
-  const lab=new Int32Array(n).fill(-1);
-  const q=new Int32Array(n);
-  const cols=[];
-  for(let i=0;i<n;i++){
-    if(dil[i] || lab[i]>=0) continue;
-    let qh=0, qt=0; q[qt++]=i; lab[i]=cols.length;
-    let sr=0,sg=0,sb=0,cnt=0;
-    while(qh<qt){
-      const k=q[qh++], p=k*4;
-      sr+=sm[p]; sg+=sm[p+1]; sb+=sm[p+2]; cnt++;
-      const x=k%w, y=(k/w)|0;
-      for(let dy=-1;dy<=1;dy++){
-        const ny=y+dy; if(ny<0||ny>=h) continue;
-        for(let dx=-1;dx<=1;dx++){
-          if(!dx&&!dy) continue;
-          const nx=x+dx; if(nx<0||nx>=w) continue;
-          const j=ny*w+nx; if(!dil[j]&&lab[j]<0){ lab[j]=cols.length; q[qt++]=j; }
-        }
-      }
-    }
+  const cols=sums.map(([sr,sg,sb,cnt])=>{
     let R=sr/cnt, G=sg/cnt, B=sb/cnt;
-    const gray=0.299*R+0.587*G+0.114*B, sat=0.72; // 蜡笔上色淡
+    const gray=0.299*R+0.587*G+0.114*B, sat=0.80; // 蜡笔上色淡（但留太多会把底色洗白，0.72 太淡）
     R=gray+(R-gray)*sat; G=gray+(G-gray)*sat; B=gray+(B-gray)*sat;
     R+=(255-R)*warm; G+=(252-G)*(warm*0.90); B+=(238-B)*(warm*0.72); // 暖化：R 抬最多、B 最少
-    let L=0.299*R+0.587*G+0.114*B;
-    const t=Math.max(0,(L-200)/55); // 亮部留白
-    if(t>0){ R+=(252-R)*t*0.85; G+=(250-G)*t*0.85; B+=(242-B)*t*0.85; }
+    const L=0.299*R+0.587*G+0.114*B;
+    const t=Math.max(0,(L-228)/45); // 亮部留白（阈值太高没效果、太低把中间调一起漂白）
+    if(t>0){ R+=(252-R)*t*0.6; G+=(250-G)*t*0.6; B+=(242-B)*t*0.6; }
     // 腮红：暖粉区叠柔和粉红（参考图的标志性大腮红）
     if(R>200 && R-B>22 && R-B<120 && G>R*0.68 && G<R*0.97){
       const tt=0.30*(0.5 + 0.5*Math.min(1, Math.max(0,(L-160)/70)));
       R+=(252-R)*tt; G+=(178-G)*tt*0.8; B+=(188-B)*tt*0.8;
     }
-    cols.push([R,G,B]);
-  }
-  // 3) 回填：细线画暖棕（笔画有起伏 + 轻微断口），其余取所在区域色 + 纸纹
+    return [R,G,B];
+  });
+  const out=new Uint8ClampedArray(n*4);
   for(let i=0;i<n;i++){
     const p=i*4, x=i%w, y=(i/w)|0;
-    const gr=(hash2(x,y)-0.5)*2*(1.2+amount*0.012);
-    if(edge[i]){
-      let cov=0.82 + 0.18*valueNoise(x*0.30+2.1, y*0.30);
-      if(valueNoise(x*0.22+13.7, y*0.22+5.3)<0.06) cov*=0.70; // 断口：蜡笔涂不满
-      out[p]=250*(1-cov)+150*cov; out[p+1]=248*(1-cov)+112*cov; out[p+2]=244*(1-cov)+88*cov;
-    } else if(lab[i]>=0){
-      const c=cols[lab[i]]; out[p]=c[0]+gr; out[p+1]=c[1]+gr; out[p+2]=c[2]+gr*0.7;
+    const gr=(hash2(x,y)-0.5)*2*(1.2+amount*0.012); // 纸纹颗粒
+    if(line[i]){
+      const cov=0.90 + 0.10*valueNoise(x*0.30+2.1, y*0.30); // 笔画浓淡起伏（不断口）
+      out[p]=248*(1-cov)+132*cov; out[p+1]=246*(1-cov)+96*cov; out[p+2]=242*(1-cov)+72*cov;
     } else {
-      let c=null;
-      for(let dy=-1;dy<=1&&!c;dy++){ const ny=y+dy; if(ny<0||ny>=h) continue;
-        for(let dx=-1;dx<=1;dx++){ const nx=x+dx; if(nx<0||nx>=w) continue;
-          const j=ny*w+nx; if(lab[j]>=0){ c=cols[lab[j]]; break; } } }
-      if(c){ out[p]=c[0]+gr; out[p+1]=c[1]+gr; out[p+2]=c[2]+gr*0.7; }
-      else { out[p]=250; out[p+1]=248; out[p+2]=244; }
+      const c=cols[lab[i]]||[250,248,244];
+      out[p]=c[0]+gr; out[p+1]=c[1]+gr; out[p+2]=c[2]+gr*0.7;
     }
     out[p+3]=sm[p+3];
   }
