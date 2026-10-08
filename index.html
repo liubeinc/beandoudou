@@ -1859,7 +1859,7 @@ function styleInk(data, w, h, amount){
   let T=paperLev/255;                     // 纸阈值（自适应画面最亮的 5%）
   T+=amount*0.0004; if(T>=1)T=0.999;      // 强度↑ → 纸阈值微抬 → 更多落墨（幅度小，不染背景）
   const span=Math.max(0.10, T-T0);
-  const levels=Math.max(5, Math.round(9 - amount*0.04));
+  const levels=9;                         // 灰阶档数固定 9 档，不随强度减少（用户要求：灰阶档数不减）
   const q=255/(levels-1);
   // 飞白（干笔擦痕）：幅度随强度增长，且只在有笔触的边缘显现——平坦墨色保持干净，不再全场撒点
   const fly=0.05 + amount*0.0035;                 // amount 0→0.05，100→0.30（原为固定 0.20 满幅）
@@ -1873,8 +1873,14 @@ function styleInk(data, w, h, amount){
       d*=1 - fly*e + 2*fly*e*valueNoise((i%w)*0.12, ((i/w)|0)*0.6);
       if(d>1)d=1;
     }
-    const ink=Math.round((1-d)*255/q)*q;
-    const p=i*4; out[p]=out[p+1]=out[p+2]=ink; out[p+3]=255;
+    const ink=Math.round((1-d)*255/q)*q;   // 墨量档位（0=满墨黑，255=纸白），固定 9 档
+    // 上色：中性灰 → 冷色墨（蓝黑）。给灰度加一点点恒定色相，让各档刻意偏离中性——
+    // 纯中性灰珠在拼豆色卡里很稀缺，redmean 匹配会把 9 档灰散落到灰绿/灰棕等脏色；
+    // 改成稳定的蓝黑墨色后，各档统一落进同一蓝灰珠族，色彩更纯净（墨色饱和度随浓度递增，纸面仍是纯白）
+    const f=1-ink/255;                     // 墨量 0(白)~1(黑)
+    const p=i*4;
+    out[p]=255-(255-24)*f; out[p+1]=255-(255-34)*f; out[p+2]=255-(255-52)*f;
+    out[p+3]=255;
   }
   return out;
 }
