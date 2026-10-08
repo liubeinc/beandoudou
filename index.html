@@ -1806,25 +1806,67 @@ function styleWater(data, w, h, amount){
 }
 /* 水墨：柔化 → 轮廓积墨 → 浓淡阈值（暗处浓墨、亮处留白）→ 墨分层次量化 */
 function styleInk(data, w, h, amount){
-  const n=w*h, g=new Float32Array(n);
-  for(let i=0;i<n;i++){ const p=i*4; g[i]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2]; }
+  const n=w*h;
   const r=Math.max(1, Math.round(1 + amount/50));
-  const sm=boxBlurGray(g, w, h, r);
-  const {mag, maxM}=sobelMag(sm, w, h);
+  const smRGB=boxBlurRGB(data, w, h, r);                 // 灰度水墨用较大模糊（柔化）
+  const g=new Float32Array(n);
+  for(let i=0;i<n;i++){ const p=i*4; g[i]=0.299*smRGB[p]+0.587*smRGB[p+1]+0.114*smRGB[p+2]; }
+  // 彩色梯度（逐通道取最大）：亮度接近但颜色不同的边界（菇柄米色 243/226/196 vs 蓝底 204/230/255）也能检出；
+  // 用灰度 sobelMag 的话这条边梯度≈0，菇柄轮廓直接消失
+  // 边缘检测改用更轻的模糊（固定 r=1）：r=2 会把菇柄这条 1px 边摊开成 6px、脊线偏移到天空/柄内部，
+  // 轮廓变模糊甚至断成两条平行线；r=1 时菇柄边梯度≈156（贴真实边界），轮廓清晰可闭合
+  const smEdge=r>1 ? boxBlurRGB(data, w, h, 1) : smRGB;
+  const {mag, gxs, gys, maxM}=sobelRGBmax(smEdge, w, h);
+  // 绝对阈值（不随 maxM 比例浮动）：菇柄米色 vs 蓝底这条「亮度接近、仅色相不同」的弱颜色边，
+  // 在网格分辨率下梯度约 100~160。之前用分位数（且把平坦像素也一起计数）会随分辨率漂移——
+  // W=60 时 thr 竟到 216，菇柄贴蓝底的上半段整段掉线；W=200 时又塌到 1，AA 噪点全场撒点。
+  // 固定门槛 80 能稳定检出菇柄边，又远低于菌盖/草地等强边（300~550）。
+  let thr=0;
   if(maxM>0){
-    const thr=maxM*(0.30 - amount*0.0016), dark=0.72 - amount*0.0018;
-    for(let i=0;i<n;i++){ if(mag[i]>=thr) sm[i]*=dark; }
+    const dark=0.72 - amount*0.0018;
+    thr=80 - amount*0.1;                 // 强度↑ → 门槛微降 → 更多弱边落墨
+    if(thr<1)thr=1;
+    // 非极大抑制只留梯度脊线（1 格宽真边界，去抗锯齿噪点），再膨胀 1 格把细线补连（不断裂）
+    const ridge=new Uint8Array(n);
+    for(let i=0;i<n;i++){
+      if(mag[i]<thr) continue;
+      const x=i%w, y=(i/w)|0;
+      const ax=Math.abs(gxs[i]), ay=Math.abs(gys[i]);
+      let n1, n2;
+      if(ax>=ay*2.414){ n1=x>0?mag[i-1]:0; n2=x<w-1?mag[i+1]:0; }
+      else if(ay>=ax*2.414){ n1=y>0?mag[i-w]:0; n2=y<h-1?mag[i+w]:0; }
+      else if((gxs[i]>0)===(gys[i]>0)){ n1=(x>0&&y>0)?mag[i-w-1]:0; n2=(x<w-1&&y<h-1)?mag[i+w+1]:0; }
+      else { n1=(x<w-1&&y>0)?mag[i-w+1]:0; n2=(x>0&&y<h-1)?mag[i+w-1]:0; }
+      if(mag[i]>=n1 && mag[i]>=n2) ridge[i]=1;
+    }
+    for(let i=0;i<n;i++){
+      if(ridge[i]!==1) continue;   // 只从 NMS 脊线(1)向外膨胀一格；否则 ridge=2 会被再次当作膨胀源级联扩散，整图糊成一片
+      const x=i%w, y=(i/w)|0;
+      for(let dy=-1;dy<=1;dy++){ const ny=y+dy; if(ny<0||ny>=h) continue;
+        for(let dx=-1;dx<=1;dx++){ const nx=x+dx; if(nx<0||nx>=w) continue; const j=ny*w+nx; if(!ridge[j]) ridge[j]=2; }
+      }
+    }
+    for(let i=0;i<n;i++){ if(ridge[i]) g[i]*=(ridge[i]===1?dark:Math.sqrt(dark)); }
   }
-  const T=0.58 + amount*0.0028;  // 白纸阈值：亮于此留白
-  const T0=T-0.48;               // 全墨阈值
+  // 自适应「纸」阈值：取画面亮度第 95 分位作纸（背景）亮度，浅色主体（菇柄/草地）得以保留淡墨；
+  // 全墨阈值仍固定 0.10（菌盖落深灰而非纯黑）。固定 T=0.58 会把菇柄(169)/草地(168)一并洗白 → 只剩菌盖
+  const hist=new Float32Array(256);
+  for(let i=0;i<n;i++){ let v=g[i]|0; if(v<0)v=0; else if(v>255)v=255; hist[v]++; }
+  let acc=0, paperLev=255;
+  const tPaper=n*0.95;
+  for(let v=0;v<256;v++){ acc+=hist[v]; if(acc>=tPaper){ paperLev=v; break; } }
+  const T0=0.10;                          // 全墨阈值（固定：菌盖是深灰不是纯黑）
+  let T=paperLev/255;                     // 纸阈值（自适应画面最亮的 5%）
+  T+=amount*0.0004; if(T>=1)T=0.999;      // 强度↑ → 纸阈值微抬 → 更多落墨（幅度小，不染背景）
+  const span=Math.max(0.10, T-T0);
   const levels=Math.max(5, Math.round(9 - amount*0.04));
   const q=255/(levels-1);
   // 飞白（干笔擦痕）：幅度随强度增长，且只在有笔触的边缘显现——平坦墨色保持干净，不再全场撒点
   const fly=0.05 + amount*0.0035;                 // amount 0→0.05，100→0.30（原为固定 0.20 满幅）
-  const edgeThr=maxM>0 ? maxM*(0.30 - amount*0.0016) : Infinity;
+  const edgeThr=thr>0 ? thr : Infinity;
   const out=new Uint8ClampedArray(n*4);
   for(let i=0;i<n;i++){
-    let d=(T - sm[i]/255)/(T-T0);  // 墨色浓度
+    let d=(T - g[i]/255)/span;  // 墨色浓度
     if(d<0)d=0; else if(d>1)d=1;
     if(d>0.05){ // 飞白：干笔横向擦痕（边缘全幅、平坦区仅 12% 微弱纹理，不再全场撒点）
       const e=mag[i]>=edgeThr ? 1 : 0.12;
