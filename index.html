@@ -859,17 +859,51 @@ function adjust(r,g,b,bri,con,sat){
   return [Math.max(0,Math.min(255,r)),Math.max(0,Math.min(255,g)),Math.max(0,Math.min(255,b))];
 }
 
-/* 色阶量化（色调分离）：把颜色明度归到较少档位，减少渐变里的中间「过渡色」。
-   用 HSV 明度 V=max(R,G,B) 量化后等比缩放 —— 保色相、保饱和度，对原照片忠实还原，
-   只压缩亮度档位，让相邻的过渡色合并、匹配到更少更干净的珠子。确定性计算。 */
-function quantizeLevels(r,g,b){
-  const N=12;                          // 明度档位数（12 档 ≈ 步长 23）：减少渐变过渡色，又保留水墨 9 档浓淡不被合并
+/* ============ 每风格色彩匹配参数 ============
+   mode='none'：不做前置量化。这些风格在匹配色号前已经自行完成「纯净度」收敛
+   （原图海报化=median-cut+近簇合并、原图抖动=误差扩散、线稿/素描=黑白灰阶离散、
+   水墨=9 档墨色、卡通/动漫/蜡笔=区域平涂），再套一层明度量化只会把颜色推离真实色号
+   （米色被推成灰白 H1），既不增加纯净度反而漂移，所以直接走忠实最近邻。
+   mode='value'：只对仍有平滑渐变的风格（水彩/油画/彩铅）做明度量化减过渡色，并带
+   「忠实护栏」tol —— 量化改了匹配色号时，只有当新色号离原色不比最近色号远太多才接受。 */
+const STYLE_COLOR = {
+  orig:    {mode:'none'},
+  line:    {mode:'none'},
+  sketch:  {mode:'none'},
+  cartoon: {mode:'none'},
+  water:   {mode:'value', N:12, tol:8},
+  ink:     {mode:'none'},
+  pencil:  {mode:'value', N:10, tol:8},
+  oil:     {mode:'value', N:12, tol:8},
+  anime:   {mode:'none'},
+  crayon:  {mode:'none'},
+};
+
+/* 明度量化（保色相、保饱和度的 HSV 明度 V 量化）：把 V=max(R,G,B) 归到 N 档再等比缩放，
+   只压缩亮度档位、让相邻的过渡色合并到更少更干净的珠子。确定性计算。 */
+function quantizeLevelsN(r,g,b,N){
   const v=Math.max(r,g,b);
   if(v<=0) return [0,0,0];
   const q=255/(N-1);
   const vq=Math.round(v/q)*q;
   const k=vq/v;
   return [r*k, g*k, b*k];
+}
+
+/* 忠实匹配入口：按风格决定是否量化。
+   量化改变匹配色号时，用 redmean 距离护栏 —— 只有当量化后色号离原色不比「最近色号」
+   远超过 tol 才接受，否则回退到忠实最近色号，从根上杜绝「米色漂成灰白」这类色相错位。
+   确定性纯函数（无随机）。dist() 见 743 行，返回 redmean 加权距离。 */
+function matchStyled(r,g,b,style){
+  const cfg=STYLE_COLOR[style];
+  if(!cfg || cfg.mode!=='value') return matchColor(r,g,b);
+  const q=quantizeLevelsN(r,g,b,cfg.N);
+  const b0=matchColor(r,g,b);
+  const b1=matchColor(q[0],q[1],q[2]);
+  if(b1===b0) return b1;
+  const d0=dist(r,g,b,RGB[b0].r,RGB[b0].g,RGB[b0].b);
+  const d1=dist(r,g,b,RGB[b1].r,RGB[b1].g,RGB[b1].b);
+  return d1<=d0+cfg.tol ? b1 : b0;
 }
 
 /* 原图「海报化」：原图是未做风格转换的照片，抗锯齿 / JPEG 高频噪点（尤其纯色背景上的
@@ -1002,8 +1036,7 @@ function detectBgFlat(data, w, h, bri, con, sat){
     if(cnt<minArea){ for(let c=0;c<cells.length;c++) comp[cells[c]]=-1; continue; } // 碎块作废
     mr.push(sr/cnt); mg.push(sg/cnt); mb.push(sb/cnt);
     const [ar,ag,ab]=adjust(sr/cnt, sg/cnt, sb/cnt, bri, con, sat);
-    const [qr,qg,qb]=quantizeLevels(ar,ag,ab);
-    midx.push(matchColor(qr,qg,qb));
+    midx.push(matchColor(ar,ag,ab));   // 背景平涂：整块单一忠实色号，无需前置量化
   }
   const flat=new Int32Array(n).fill(-1);
   for(let i=0;i<n;i++) if(comp[i]>=0) flat[i]=midx[comp[i]];
@@ -1092,8 +1125,7 @@ function generate(commit, lowRes){
     if(dither){ r=err[i*3]+data[p]; g=err[i*3+1]+data[p+1]; b=err[i*3+2]+data[p+2]; }
     else { r=data[p]; g=data[p+1]; b=data[p+2]; }
     let [ar,ag,ab]=adjust(r,g,b,bri,con,sat);
-    const [qr,qg,qb]=quantizeLevels(ar,ag,ab);   // 色阶量化：减少过渡色
-    const idx=matchColor(qr,qg,qb);
+    const idx=matchStyled(ar,ag,ab,STYLE);   // 每风格色彩匹配：忠实原图 + 按需量化
     grid[i]=idx;
     if(dither && idx>=0){
       const c=RGB[idx];
