@@ -390,7 +390,7 @@
           <button data-v="pencil">彩铅</button>
           <button data-v="oil">油画</button>
           <button data-v="anime">动漫</button>
-          <button data-v="crayon">蜡笔</button>
+          <button data-v="qban">Q版头像</button>
         </div>
         <div class="style-strength" id="styleStrength" style="display:none">
           <label>强度 <span class="val" id="styleVal">50</span></label>
@@ -789,7 +789,7 @@ let appliedGrid=null, appliedW=0, appliedH=0; // 已「应用」的正式网格�
 let showCode=true, showGrid=true;
 let bgColors=[]; // 手动拾取的背景色列表 [{r,g,b},...]，空=未拾取（退回四角自动检测）
 let crop=null; // 裁切区域 {x,y,w,h} 相对原图 0~1 比例, null=全图
-let STYLE='orig'; // 风格预处理：orig 原图 / line 线稿 / sketch 素描 / cartoon 卡通 / water 水彩 / ink 水墨 / pencil 彩铅 / oil 油画 / anime 动漫 / crayon 蜡笔（强度实时读滑杆，见 #styleAmount）
+let STYLE='orig'; // 风格预处理：orig 原图 / line 线稿 / sketch 素描 / cartoon 卡通 / water 水彩 / ink 水墨 / pencil 彩铅 / oil 油画 / anime 动漫 / qban Q版头像（强度实时读滑杆，见 #styleAmount）
 let previewPending=false, previewRAF=0; // 拖拽预览节流（低清渲染）状态
 let sourceData=null;    // 当前生成所用「采样+风格后」原始像素（w×h RGBA），用于原图对照
 let viewOriginal=false; // true=预览显示原图（未匹配色号），false=显示拼豆图纸
@@ -862,7 +862,7 @@ function adjust(r,g,b,bri,con,sat){
 /* ============ 每风格色彩匹配参数 ============
    mode='none'：不做前置量化。这些风格在匹配色号前已经自行完成「纯净度」收敛
    （原图海报化=median-cut+近簇合并、原图抖动=误差扩散、线稿/素描=黑白灰阶离散、
-   水墨=9 档墨色、卡通/动漫/蜡笔=区域平涂），再套一层明度量化只会把颜色推离真实色号
+   水墨=9 档墨色、卡通/动漫/Q版头像=区域平涂），再套一层明度量化只会把颜色推离真实色号
    （米色被推成灰白 H1），既不增加纯净度反而漂移，所以直接走忠实最近邻。
    mode='value'：只对仍有平滑渐变的风格（水彩/油画/彩铅）做明度量化减过渡色，并带
    「忠实护栏」tol —— 量化改了匹配色号时，只有当新色号离原色不比最近色号远太多才接受。 */
@@ -876,7 +876,7 @@ const STYLE_COLOR = {
   pencil:  {mode:'value', N:10, tol:8},
   oil:     {mode:'value', N:12, tol:8},
   anime:   {mode:'none'},
-  crayon:  {mode:'none'},
+  qban:    {mode:'none'},
 };
 
 /* 明度量化（保色相、保饱和度的 HSV 明度 V 量化）：把 V=max(R,G,B) 归到 N 档再等比缩放，
@@ -2101,7 +2101,7 @@ function regionMap(data, w, h, frac, minThr, gateFrac, absCap){
     // 绝对上限兜底。纹理密集的照片（反光背心、人群、树叶、砖墙）里「强」梯度像素占比极高，
     // 分位阈会被抬到很离谱的高度——实测 100×62 的工人照在 frac=0.20 下 thr=255（maxM 才 644），
     // 主体轮廓全部掉线，只剩反光条。用绝对上限把阈值压回来，主体轮廓才留得住；
-    // 平坦插画的分位阈本来就低于上限，不受影响（所以动漫/蜡笔那套调参原样保留）。
+    // 平坦插画的分位阈本来就低于上限，不受影响（所以动漫/Q版头像那套调参原样保留）。
     if(absCap!=null && thr>absCap) thr=absCap;
     for(let y=0;y<h;y++){
       for(let x=0;x<w;x++){
@@ -2247,7 +2247,7 @@ function regionMap(data, w, h, frac, minThr, gateFrac, absCap){
 }
 
 /* ============ 风格管线：① 提铅笔线稿 → ② 按风格做笔触 → ③ 处理色块 ============
-   线稿类风格（线稿/素描/卡通/动漫/蜡笔）共用这一套。第一阶段只做一次「线在哪、有多重」的提取，
+   线稿类风格（线稿/素描/卡通/动漫/Q版头像）共用这一套。第一阶段只做一次「线在哪、有多重」的提取，
    输出的是 0~1 的**软墨量**（不是二值掩码）——铅笔的浓淡就来自边缘能量 + 笔压 + 颗粒；
    第二阶段按所选风格把这份墨量重新渲染成该风格的笔触；第三阶段才各自填色块。 */
 
@@ -2387,35 +2387,20 @@ function styleAnime(data, w, h, amount){
   return overlayRGB(base, renderStroke(ink, w, h,
     {color:[30,24,28], alpha:1.0, thr:0.50, soft:0.14, width:1, grain:0.05, wobble:0.8}));
 }
-/* 蜡笔涂鸦：① 提铅笔线稿 → ② 笔触渲成粗暖棕蜡笔线 → ③ 每区平涂（降饱和 + 暖化留白 + 腮红） */
-function styleCrayon(data, w, h, amount){
+/* Q版头像：① 提铅笔线稿 → ② 笔触渲成清晰深描边 → ③ 每区取均值整块平涂（忠实原图色，不提饱和）。
+   Q版头像的核心是「干净平涂 + 清晰轮廓」：区域均值天然保真不偏色，只在深描边处作画；
+   区别于动漫（提饱和 1.28 + 亮部推白）、卡通（亮度量化 + 提饱和 1.35）。 */
+function styleQban(data, w, h, amount){
   const n=w*h;
   const {ink, lab, sums, sm}=lineArt(data, w, h, amount);
-  const warm=0.12 + amount*0.0008;
-  const cols=sums.map(([sr,sg,sb,cnt])=>{
-    let R=sr/cnt, G=sg/cnt, B=sb/cnt;
-    const gray=0.299*R+0.587*G+0.114*B, sat=0.80; // 蜡笔上色淡（但留太多会把底色洗白，0.72 太淡）
-    R=gray+(R-gray)*sat; G=gray+(G-gray)*sat; B=gray+(B-gray)*sat;
-    R+=(255-R)*warm; G+=(252-G)*(warm*0.90); B+=(238-B)*(warm*0.72); // 暖化：R 抬最多、B 最少
-    const L=0.299*R+0.587*G+0.114*B;
-    const t=Math.max(0,(L-228)/45); // 亮部留白（阈值太高没效果、太低把中间调一起漂白）
-    if(t>0){ R+=(252-R)*t*0.6; G+=(250-G)*t*0.6; B+=(242-B)*t*0.6; }
-    // 腮红：暖粉区叠柔和粉红（参考图的标志性大腮红）
-    if(R>200 && R-B>22 && R-B<120 && G>R*0.68 && G<R*0.97){
-      const tt=0.30*(0.5 + 0.5*Math.min(1, Math.max(0,(L-160)/70)));
-      R+=(252-R)*tt; G+=(178-G)*tt*0.8; B+=(188-B)*tt*0.8;
-    }
-    return [R,G,B];
-  });
+  const cols=sums.map(([sr,sg,sb,cnt])=>[sr/cnt, sg/cnt, sb/cnt]);   // 忠实原色：区域均值，无提饱和/暖化/腮红
   const base=new Uint8ClampedArray(n*4);
   for(let i=0;i<n;i++){
-    const p=i*4, x=i%w, y=(i/w)|0;
-    const gr=(hash2(x,y)-0.5)*2*(1.2+amount*0.012); // 纸纹颗粒
-    const c=cols[lab[i]]||[250,248,244];
-    base[p]=c[0]+gr; base[p+1]=c[1]+gr; base[p+2]=c[2]+gr*0.7; base[p+3]=sm[p+3];
+    const p=i*4, c=cols[lab[i]]||[255,255,255];
+    base[p]=c[0]; base[p+1]=c[1]; base[p+2]=c[2]; base[p+3]=sm[p+3];
   }
   return overlayRGB(base, renderStroke(ink, w, h,
-    {color:[132,96,72], alpha:0.90, thr:0.40, soft:0.30, width:2, grain:0.18, wobble:1.4}));
+    {color:[28,26,30], alpha:1.0, thr:0.50, soft:0.14, width:1, grain:0.04, wobble:0.7}));
 }
 function applyStyle(data, w, h, style, amount){
   if(style==='line') return styleLine(data, w, h, amount);
@@ -2426,7 +2411,7 @@ function applyStyle(data, w, h, style, amount){
   if(style==='pencil') return stylePencil(data, w, h, amount);
   if(style==='oil') return styleOil(data, w, h, amount);
   if(style==='anime') return styleAnime(data, w, h, amount);
-  if(style==='crayon') return styleCrayon(data, w, h, amount);
+  if(style==='qban') return styleQban(data, w, h, amount);
   return data;
 }
 $('style').addEventListener('click',e=>{
@@ -2613,7 +2598,8 @@ function restoreSettings(){
   if(d.brightness!=null){ $('brightness').value=d.brightness; $('briVal').textContent=d.brightness; }
   if(d.contrast!=null){ $('contrast').value=d.contrast; $('conVal').textContent=d.contrast; }
   if(d.saturation!=null){ $('saturation').value=d.saturation; $('satVal').textContent=d.saturation; }
-  if(d.style && ['orig','line','sketch','cartoon','water','ink','pencil','oil','anime','crayon'].includes(d.style)){
+  if(d.style==='crayon') d.style='qban'; // 旧「蜡笔」迁移为「Q版头像」
+  if(d.style && ['orig','line','sketch','cartoon','water','ink','pencil','oil','anime','qban'].includes(d.style)){
     STYLE=d.style;
     const b=$('style').querySelector(`[data-v="${d.style}"]`);
     if(b){ $('style').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); }
