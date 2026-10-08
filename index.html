@@ -452,7 +452,7 @@
       </div>
 
       <div class="row">
-        <label class="check"><input type="checkbox" id="dither" checked> 抖动优化（照片渐变更细腻）</label>
+        <label class="check" title="开启：色块平整的海报化效果，消除照片/卡通的高频杂色（适合卡通·插画）；关闭：保留照片渐变，并启用抖动优化让渐变更细腻（适合照片）"><input type="checkbox" id="posterize" checked> 海报化平涂（色块干净 · 去杂色）</label>
       </div>
 
       <div class="row">
@@ -872,6 +872,79 @@ function quantizeLevels(r,g,b){
   return [r*k, g*k, b*k];
 }
 
+/* 原图「海报化」：原图是未做风格转换的照片，抗锯齿 / JPEG 高频噪点（尤其纯色背景上的
+   浅灰/浅蓝/浅粉杂点）会被逐格匹配成零星异色珠子，肉眼就是「杂色麻点」。
+   做法：(1) 3×3 空间平滑抹掉高频噪点；(2) 中位切分（median cut）把整图归并到 K 个
+   聚类色 —— 纯色背景的细微色差被并成同一块平涂色，主体保留色阶分块。
+   用聚类色而不是逐通道量化：逐通道粗量化会把浅中性色（如 226,234,240）拍成饱和青
+   （204,255,255），色相严重漂移；聚类色取的是各块的真实均色，颜色忠实。
+   确定性：排序有稳定 tie-break（通道→余下通道→索引），无 Math.random。 */
+function posterizePhoto(data, w, h){
+  const n=w*h;
+  const sm=boxBlurRGB(data, w, h, 1);        // 3×3 平滑：抹掉抗锯齿/JPEG 高频杂色
+  const opaque=[];
+  for(let i=0;i<n;i++) if(sm[i*4+3]>=40) opaque.push(i);
+  if(opaque.length<2) return sm;
+  const K=24;                                 // 中位切分目标簇数（宁多勿少，随后再合并近色簇）
+  const MERGE=24;                             // 近色簇合并阈值（RGB 欧氏距离）：把纯色区被切碎的近似色并回一整块
+  // 采样（最多约 4096 个像素）做聚类统计：大图（200×200=4 万像素）若对整排反复排序会到 ~180ms，
+  // 采样后中位切分只需处理几千个点，最后按「最近簇色」回填全图像素，效果几乎一致。
+  const step=Math.max(1, Math.ceil(opaque.length/4096));
+  const idxs=[]; for(let i=0;i<opaque.length;i+=step) idxs.push(opaque[i]);
+  const bounds=b=>{
+    let rmin=255,rmax=0,gmin=255,gmax=0,bmin=255,bmax=0;
+    for(const i of b.idx){ const p=i*4, r=sm[p], g=sm[p+1], bl=sm[p+2];
+      if(r<rmin)rmin=r; if(r>rmax)rmax=r; if(g<gmin)gmin=g; if(g>gmax)gmax=g;
+      if(bl<bmin)bmin=bl; if(bl>bmax)bmax=bl; }
+    b.range=Math.max(rmax-rmin, gmax-gmin, bmax-bmin);
+    b.axis=(rmax-rmin>=gmax-gmin && rmax-rmin>=bmax-bmin) ? 0 : (gmax-gmin>=bmax-bmin ? 1 : 2);
+  };
+  let boxes=[{idx:idxs}]; bounds(boxes[0]);
+  while(boxes.length<K){
+    let bi=-1, br=-1;
+    for(let i=0;i<boxes.length;i++){ const b=boxes[i]; if(b.idx.length>1 && b.range>br){ br=b.range; bi=i; } }
+    if(bi<0) break;
+    const b=boxes[bi], ax=b.axis;
+    b.idx.sort((p,q)=>{ const dp=sm[p*4+ax], dq=sm[q*4+ax]; if(dp!==dq) return dp-dq;
+      for(let k=0;k<3;k++){ if(k===ax) continue; const d=sm[p*4+k]-sm[q*4+k]; if(d) return d; }
+      return p-q; });
+    const mid=b.idx.length>>1;
+    const left={idx:b.idx.slice(0,mid)}, right={idx:b.idx.slice(mid)};
+    bounds(left); bounds(right);
+    boxes.splice(bi,1,left,right);
+  }
+  const pal=boxes.map(b=>{ let sr=0,sg=0,sb=0; for(const i of b.idx){ const p=i*4; sr+=sm[p]; sg+=sm[p+1]; sb+=sm[p+2]; } const c=b.idx.length; return [sr/c, sg/c, sb/c]; });
+  const cnt=boxes.map(b=>b.idx.length);
+  /* 近色簇合并：反复把距离 < MERGE 的最近一对簇并成一个（按像素数加权平均）。
+     纯色区（背景/主体大色块）的细微色差会被中位切分切成若干近似簇，若不合并，
+     这些近似色会分别匹配到相邻的不同色号 → 又变成肉眼可见的杂色点。 */
+  const grp=pal.map((_,i)=>i);
+  for(;;){
+    let bi=-1,bj=-1,bd=MERGE*MERGE;
+    for(let i=0;i<grp.length;i++){ if(grp[i]!==i) continue;
+      for(let j=i+1;j<grp.length;j++){ if(grp[j]!==j) continue;
+        const d=(pal[i][0]-pal[j][0])**2+(pal[i][1]-pal[j][1])**2+(pal[i][2]-pal[j][2])**2;
+        if(d<bd){ bd=d; bi=i; bj=j; } } }
+    if(bi<0) break;
+    const wa=cnt[bi], wb=cnt[bj], wt=wa+wb;
+    pal[bi]=[(pal[bi][0]*wa+pal[bj][0]*wb)/wt, (pal[bi][1]*wa+pal[bj][1]*wb)/wt, (pal[bi][2]*wa+pal[bj][2]*wb)/wt];
+    cnt[bi]=wt; grp[bj]=bi;
+  }
+  // 收集存活簇的最终色板，再按「最近簇色」回填全图像素（含未参与采样的像素）
+  const finalPal=[]; for(let k=0;k<pal.length;k++) if(grp[k]===k) finalPal.push(pal[k]);
+  const ncl=finalPal.length;
+  const out=new Uint8ClampedArray(n*4);
+  for(let i=0;i<n;i++){
+    const p=i*4;
+    if(sm[p+3]<40){ out[p+3]=sm[p+3]; continue; }   // 透明/空白格保持透明
+    let best=0, bd=Infinity;
+    for(let k=0;k<ncl;k++){ const c=finalPal[k]; const dr=sm[p]-c[0], dg=sm[p+1]-c[1], db=sm[p+2]-c[2]; const d=dr*dr+dg*dg+db*db; if(d<bd){ bd=d; best=k; } }
+    const c=finalPal[best];
+    out[p]=c[0]; out[p+1]=c[1]; out[p+2]=c[2]; out[p+3]=sm[p+3];
+  }
+  return out;
+}
+
 /* 背景自动识别 + 平涂：
    从画面四边向内做「颜色相近」的区域生长（多源 BFS，每个边界像素带着自己的参考色），
    再按连通块面积过滤（只保留大面积色块），每块取均值匹配一个最接近的色号。
@@ -975,7 +1048,9 @@ function generate(commit, lowRes){
   const limit=+$('colorLimit').value;
   const shape=$('shape').querySelector('.on').dataset.v;
   const removeBg=$('removeBg').checked;
-  const dither = STYLE==='orig' && $('dither').checked; // 风格化处理（线稿/素描/卡通/水彩/水墨/彩铅/油画）需要平涂清晰，自动关闭抖动
+  // 原图两种模式二选一（互斥）：海报化平涂（默认，色块干净去杂色）/ 抖动优化（保留渐变，但纯色区会有抖动麻点）
+  const posterize = STYLE==='orig' && $('posterize').checked;
+  const dither = STYLE==='orig' && !$('posterize').checked; // 风格化处理（线稿/素描/卡通/水彩/水墨/彩铅/油画）需要平涂清晰，自动关闭抖动
   const bri=+$('brightness').value, con=+$('contrast').value, sat=+$('saturation').value;
 
   // 采样：把原图（或裁切区域）缩到 w×h
@@ -991,7 +1066,9 @@ function generate(commit, lowRes){
   let data=octx.getImageData(0,0,w,h).data;
 
   // 风格预处理（线稿/素描/卡通/水彩/水墨/彩铅/油画）：在匹配色号前先转换像素
-  if(STYLE && STYLE!=='orig') data=applyStyle(data, w, h, STYLE, +$('styleAmount').value);
+  // 原图：海报化预处理（空间平滑 + 中位切分归并色）→ 消除高频杂色，得到干净的大色块
+  if(STYLE==='orig'){ if(posterize) data=posterizePhoto(data, w, h); }
+  else if(STYLE) data=applyStyle(data, w, h, STYLE, +$('styleAmount').value);
   sourceData = data; // 留存「采样+风格后」原图像素，供原图对照
 
   // 背景自动识别 + 平涂（可选）：大面积连通色块整块用单一色号，且不参与抖动 → 背景干净无杂色
@@ -1427,7 +1504,7 @@ function loadFile(f){
     $('wVal').textContent=$('width').value;
     $('hVal').textContent=$('height').value;
     updateDims(+$('width').value,+$('height').value);
-    if(detectFlat()) $('dither').checked=false; // 平面图自动关抖动
+    if(detectFlat()) $('posterize').checked=true; // 平面图自动启用海报化平涂
     generate();
     saveProjectImage();
     if(isCoarse()) $('genBar').classList.add('show');
@@ -1604,7 +1681,7 @@ pickImg.addEventListener('click',pickFromImg);
 pickUndo.addEventListener('click',()=>{ bgColors.pop(); renderBgSwatches(); generate(false); });
 pickClear.addEventListener('click',()=>{ bgColors=[]; renderBgSwatches(); generate(false); });
 pickDone.addEventListener('click',()=>{ $('removeBg').checked=true; $('bgPick').style.display='flex'; $('bgContigRow').style.display='block'; renderBgSwatches(); closePickPanel(true); });
-$('dither').addEventListener('change',()=>generate());
+$('posterize').addEventListener('change',()=>generate());
 $('flatBg').addEventListener('change',()=>generate());
 const DEFAULTS={ width:60, height:60, colorLimit:48, brightness:0, contrast:0, saturation:0 };
 function resetSliders(ids){
@@ -2465,7 +2542,7 @@ function saveSettings(){
     width:+$('width').value, height:+$('height').value,
     keepRatio:$('keepRatio').checked, colorLimit:+$('colorLimit').value,
     shape:$('shape').querySelector('.on').dataset.v,
-    removeBg:$('removeBg').checked, bgContig:$('bgContig').checked, dither:$('dither').checked,
+    removeBg:$('removeBg').checked, bgContig:$('bgContig').checked, posterize:$('posterize').checked,
     flatBg:$('flatBg').checked,
     brightness:+$('brightness').value, contrast:+$('contrast').value, saturation:+$('saturation').value,
     style:STYLE, styleAmount:+$('styleAmount').value, viewOriginal:viewOriginal,
@@ -2498,7 +2575,8 @@ function restoreSettings(){
   if(d.shape){ const b=$('shape').querySelector(`[data-v="${d.shape}"]`); if(b){ $('shape').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); } }
   if(typeof d.removeBg==='boolean'){ $('removeBg').checked=d.removeBg; $('bgPick').style.display = d.removeBg ? 'flex' : 'none'; $('bgContigRow').style.display = d.removeBg ? 'block' : 'none'; if(d.removeBg) renderBgSwatches(); }
   if(typeof d.bgContig==='boolean') $('bgContig').checked=d.bgContig;
-  if(typeof d.dither==='boolean') $('dither').checked=d.dither;
+  if(typeof d.posterize==='boolean') $('posterize').checked=d.posterize;
+  else if(typeof d.dither==='boolean') $('posterize').checked=!d.dither; // 旧设置迁移：旧「抖动」开 = 新「海报化」关
   if(typeof d.flatBg==='boolean') $('flatBg').checked=d.flatBg;
   if(d.brightness!=null){ $('brightness').value=d.brightness; $('briVal').textContent=d.brightness; }
   if(d.contrast!=null){ $('contrast').value=d.contrast; $('conVal').textContent=d.contrast; }
