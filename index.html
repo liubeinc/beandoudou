@@ -859,6 +859,19 @@ function adjust(r,g,b,bri,con,sat){
   return [Math.max(0,Math.min(255,r)),Math.max(0,Math.min(255,g)),Math.max(0,Math.min(255,b))];
 }
 
+/* 色阶量化（色调分离）：把颜色明度归到较少档位，减少渐变里的中间「过渡色」。
+   用 HSV 明度 V=max(R,G,B) 量化后等比缩放 —— 保色相、保饱和度，对原照片忠实还原，
+   只压缩亮度档位，让相邻的过渡色合并、匹配到更少更干净的珠子。确定性计算。 */
+function quantizeLevels(r,g,b){
+  const N=12;                          // 明度档位数（12 档 ≈ 步长 23）：减少渐变过渡色，又保留水墨 9 档浓淡不被合并
+  const v=Math.max(r,g,b);
+  if(v<=0) return [0,0,0];
+  const q=255/(N-1);
+  const vq=Math.round(v/q)*q;
+  const k=vq/v;
+  return [r*k, g*k, b*k];
+}
+
 /* 背景自动识别 + 平涂：
    从画面四边向内做「颜色相近」的区域生长（多源 BFS，每个边界像素带着自己的参考色），
    再按连通块面积过滤（只保留大面积色块），每块取均值匹配一个最接近的色号。
@@ -916,7 +929,8 @@ function detectBgFlat(data, w, h, bri, con, sat){
     if(cnt<minArea){ for(let c=0;c<cells.length;c++) comp[cells[c]]=-1; continue; } // 碎块作废
     mr.push(sr/cnt); mg.push(sg/cnt); mb.push(sb/cnt);
     const [ar,ag,ab]=adjust(sr/cnt, sg/cnt, sb/cnt, bri, con, sat);
-    midx.push(matchColor(ar,ag,ab));
+    const [qr,qg,qb]=quantizeLevels(ar,ag,ab);
+    midx.push(matchColor(qr,qg,qb));
   }
   const flat=new Int32Array(n).fill(-1);
   for(let i=0;i<n;i++) if(comp[i]>=0) flat[i]=midx[comp[i]];
@@ -1001,7 +1015,8 @@ function generate(commit, lowRes){
     if(dither){ r=err[i*3]+data[p]; g=err[i*3+1]+data[p+1]; b=err[i*3+2]+data[p+2]; }
     else { r=data[p]; g=data[p+1]; b=data[p+2]; }
     let [ar,ag,ab]=adjust(r,g,b,bri,con,sat);
-    const idx=matchColor(ar,ag,ab);
+    const [qr,qg,qb]=quantizeLevels(ar,ag,ab);   // 色阶量化：减少过渡色
+    const idx=matchColor(qr,qg,qb);
     grid[i]=idx;
     if(dither && idx>=0){
       const c=RGB[idx];
