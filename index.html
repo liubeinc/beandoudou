@@ -906,30 +906,6 @@ function matchStyled(r,g,b,style){
   return d1<=d0+cfg.tol ? b1 : b0;
 }
 
-/* 自动对比度增强（保色相）：仅当原图明显「雾蒙/低对比」（亮度 1%..99% 分位跨度 < 128，
-   即不足半量程）时才做拉伸，把该分位区间映射到 [0,255] 再等比缩放 RGB —— 只拉亮度、不漂色相。
-   正常/高对比原图（跨度 ≥ 128）直接原样返回，绝不把暗部拍黑、亮部拍白，保证忠实原图色彩。
-   确定性：排序取分位，无 Math.random。 */
-function autoContrast(data, w, h){
-  const n=w*h;
-  const lum=new Float32Array(n);
-  let cnt=0;
-  for(let i=0;i<n;i++){ const p=i*4; if(data[p+3]<40) continue; lum[cnt++]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2]; }
-  if(cnt<4) return data;
-  const sorted=Array.prototype.slice.call(lum, 0, cnt).sort((a,b)=>a-b);
-  const lo=sorted[Math.floor(cnt*0.01)], hi=sorted[Math.floor(cnt*0.99)];
-  if(hi-lo>=128) return data;                    // 对比度已足够（≥半量程），无需拉伸，避免破坏忠实色
-  const scale=255/(hi-lo);
-  for(let i=0;i<n;i++){
-    const p=i*4; if(data[p+3]<40) continue;
-    const L=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2];
-    const L2=(L-lo)*scale;
-    const k=L>0 ? L2/L : 0;
-    if(k>0 && k!==1){ data[p]*=k; data[p+1]*=k; data[p+2]*=k; }   // Uint8ClampedArray 赋值自动截断到 0..255
-  }
-  return data;
-}
-
 /* sRGB → OkLab 感知空间（Björn Ottosson 2020）：感知均匀，等欧氏距离≈等人眼差异。
    pngquant/libimagequant 的忠实量化核心就是「在感知空间聚类」——纯 RGB 欧氏距离会把
    感知不相近的颜色并成一簇（RGB 等距 ≠ 人眼等距）。确定性纯函数，无 Math.random。 */
@@ -992,14 +968,14 @@ function kmeansCluster(samples, K, maxIter){
 
 /* 原图「海报化」：原图是未做风格转换的照片，抗锯齿 / JPEG 高频噪点（尤其纯色背景上的
    浅灰/浅蓝/浅粉杂点）会被逐格匹配成零星异色珠子，肉眼就是「杂色麻点」。
-   做法：(1) 3×3 空间平滑抹掉高频噪点；(2) 自动对比度拉伸提亮色彩分层；
-   (3) k-means 聚类把整图归并到 K 个簇色 —— 纯色背景的细微色差并成同一平涂色，主体保留色阶分块。
+   做法：(1) 3×3 空间平滑抹掉高频噪点；(2) k-means 聚类把整图归并到 K 个簇色 ——
+   纯色背景的细微色差并成同一平涂色，主体保留色阶分块。
    用聚类色而不是逐通道量化：逐通道粗量化会把浅中性色（如 226,234,240）拍成饱和青
    （204,255,255），色相严重漂移；k-means 簇中心取各块真实均色，颜色忠实。
    确定性：k-means 固定种子初始化，无 Math.random。 */
 function posterizePhoto(data, w, h){
   const n=w*h;
-  const sm=autoContrast(boxBlurRGB(data, w, h, 1), w, h);  // 3×3 平滑抹杂色 → 自动对比度提分层
+  const sm=boxBlurRGB(data, w, h, 1);        // 3×3 平滑：抹掉抗锯齿/JPEG 高频杂色
   const opaque=[];
   for(let i=0;i<n;i++) if(sm[i*4+3]>=40) opaque.push(i);
   if(opaque.length<2) return sm;
