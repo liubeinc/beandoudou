@@ -930,40 +930,62 @@ function autoContrast(data, w, h){
   return data;
 }
 
-/* 确定性 k-means 聚类：把采样像素归并到 K 个簇，返回簇中心色（RGB）。
-   用固定种子的 mulberry32 PRNG 做 k-means++ 初始化（无 Math.random，重渲染结果字节一致），
-   再跑 Lloyd 迭代直到收敛。k-means 比 median cut 更贴合人眼感知的自然色簇
-   （beanpindou.com 照片模式即用 kmeans 采集色彩），簇中心是簇内均色、颜色忠实。 */
+/* sRGB → OkLab 感知空间（Björn Ottosson 2020）：感知均匀，等欧氏距离≈等人眼差异。
+   pngquant/libimagequant 的忠实量化核心就是「在感知空间聚类」——纯 RGB 欧氏距离会把
+   感知不相近的颜色并成一簇（RGB 等距 ≠ 人眼等距）。确定性纯函数，无 Math.random。 */
+function rgbToOklab(r,g,b){
+  const R=r/255, G=g/255, B=b/255;
+  const lr=R<=0.04045?R/12.92:Math.pow((R+0.055)/1.055,2.4);
+  const lg=G<=0.04045?G/12.92:Math.pow((G+0.055)/1.055,2.4);
+  const lb=B<=0.04045?B/12.92:Math.pow((B+0.055)/1.055,2.4);
+  const l=0.4122214708*lr+0.5363325363*lg+0.0514459929*lb;
+  const m=0.2119034982*lr+0.6806995451*lg+0.1073969566*lb;
+  const s=0.0883024619*lr+0.2817188376*lg+0.6299787005*lb;
+  const l_=Math.cbrt(l), m_=Math.cbrt(m), s_=Math.cbrt(s);
+  return [
+    0.2104542553*l_+0.7936177850*m_-0.0040720468*s_,
+    1.9779984951*l_-2.4285922050*m_+0.4505937099*s_,
+    0.0259040371*l_+0.7827717662*m_-0.8086757660*s_
+  ];
+}
+
+/* 确定性 k-means 聚类（pngquant 式感知量化）：把采样像素归并到 K 个簇，返回簇中心色（RGB）。
+   距离用 OkLab 感知空间（rgbToOklab），避免纯 RGB 欧氏把感知不相近的颜色并簇；
+   中心仍取 RGB 均值（与下游 redmean 匹配同一把尺子）。k-means++ 用固定种子 mulberry32
+   PRNG 初始化（无 Math.random，重渲染结果字节一致），再跑 Lloyd 迭代直到收敛。 */
 function kmeansCluster(samples, K, maxIter){
   const N=samples.length;
   if(N<=K){ const seen=new Set(), out=[]; for(const c of samples){ const key=(c[0]<<16)|(c[1]<<8)|c[2]; if(!seen.has(key)){ seen.add(key); out.push(c.slice()); } } return out; }
+  const lab=samples.map(c=>rgbToOklab(c[0],c[1],c[2]));  // 预转 OkLab，距离在感知空间算
   let seed=0x9E3779B9;
   const rnd=()=>{ seed|=0; seed=(seed+0x6D2B79F5)|0; let t=Math.imul(seed^(seed>>>15),1|seed); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; };
-  const centers=[];
-  centers.push(samples[(rnd()*N)|0].slice());    // 第一个中心：固定种子随机取一点
+  const centers=[];        // RGB 中心（输出）
+  const clab=[];           // 对应 RGB 中心的 OkLab 坐标（距离用）
+  const first=(rnd()*N)|0;
+  centers.push(samples[first].slice()); clab.push(lab[first]);  // 第一个中心：固定种子随机取一点
   const D=new Float64Array(N).fill(Infinity);
   while(centers.length<K){                        // k-means++：按「到最近中心距离平方」加权抽后续中心
     let sum=0;
-    const c=centers[centers.length-1];
-    for(let i=0;i<N;i++){ const p=samples[i]; const dr=p[0]-c[0],dg=p[1]-c[1],db=p[2]-c[2]; const d=dr*dr+dg*dg+db*db; if(d<D[i]) D[i]=d; sum+=D[i]; }
+    const c=clab[clab.length-1];
+    for(let i=0;i<N;i++){ const p=lab[i]; const dl=p[0]-c[0],da=p[1]-c[1],db=p[2]-c[2]; const d=dl*dl+da*da+db*db; if(d<D[i]) D[i]=d; sum+=D[i]; }
     if(sum<=0) break;                             // 采样点已全是现有中心（平图）：提前结束
     let t=rnd()*sum, idx=0;
     for(let i=0;i<N;i++){ t-=D[i]; if(t<=0){ idx=i; break; } }
-    centers.push(samples[idx].slice());
+    centers.push(samples[idx].slice()); clab.push(lab[idx]);
   }
-  // Lloyd 迭代：分配 → 重算中心，直到无像素换簇或达迭代上限
+  // Lloyd 迭代：OkLab 距离分配 → RGB 均值重算中心，直到无像素换簇或达迭代上限
   const K2=centers.length;
   const assign=new Int16Array(N);
   const sr=new Float64Array(K2), sg=new Float64Array(K2), sb=new Float64Array(K2), cc=new Int32Array(K2);
   for(let iter=0; iter<maxIter; iter++){
     let changed=0;
-    for(let i=0;i<N;i++){ const p=samples[i]; let best=0, bd=Infinity;
-      for(let k=0;k<K2;k++){ const c=centers[k]; const dr=p[0]-c[0],dg=p[1]-c[1],db=p[2]-c[2]; const d=dr*dr+dg*dg+db*db; if(d<bd){ bd=d; best=k; } }
+    for(let i=0;i<N;i++){ const p=lab[i]; let best=0, bd=Infinity;
+      for(let k=0;k<K2;k++){ const c=clab[k]; const dl=p[0]-c[0],da=p[1]-c[1],db=p[2]-c[2]; const d=dl*dl+da*da+db*db; if(d<bd){ bd=d; best=k; } }
       if(assign[i]!==best){ assign[i]=best; changed++; } }
     if(changed===0 && iter>0) break;
     sr.fill(0); sg.fill(0); sb.fill(0); cc.fill(0);
     for(let i=0;i<N;i++){ const k=assign[i], p=samples[i]; sr[k]+=p[0]; sg[k]+=p[1]; sb[k]+=p[2]; cc[k]++; }
-    for(let k=0;k<K2;k++){ if(cc[k]>0) centers[k]=[sr[k]/cc[k], sg[k]/cc[k], sb[k]/cc[k]]; }
+    for(let k=0;k<K2;k++){ if(cc[k]>0){ centers[k]=[sr[k]/cc[k], sg[k]/cc[k], sb[k]/cc[k]]; clab[k]=rgbToOklab(centers[k][0],centers[k][1],centers[k][2]); } }
   }
   return centers;
 }
