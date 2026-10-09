@@ -906,51 +906,95 @@ function matchStyled(r,g,b,style){
   return d1<=d0+cfg.tol ? b1 : b0;
 }
 
+/* 自动对比度增强（保色相）：仅当原图明显「雾蒙/低对比」（亮度 1%..99% 分位跨度 < 128，
+   即不足半量程）时才做拉伸，把该分位区间映射到 [0,255] 再等比缩放 RGB —— 只拉亮度、不漂色相。
+   正常/高对比原图（跨度 ≥ 128）直接原样返回，绝不把暗部拍黑、亮部拍白，保证忠实原图色彩。
+   确定性：排序取分位，无 Math.random。 */
+function autoContrast(data, w, h){
+  const n=w*h;
+  const lum=new Float32Array(n);
+  let cnt=0;
+  for(let i=0;i<n;i++){ const p=i*4; if(data[p+3]<40) continue; lum[cnt++]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2]; }
+  if(cnt<4) return data;
+  const sorted=Array.prototype.slice.call(lum, 0, cnt).sort((a,b)=>a-b);
+  const lo=sorted[Math.floor(cnt*0.01)], hi=sorted[Math.floor(cnt*0.99)];
+  if(hi-lo>=128) return data;                    // 对比度已足够（≥半量程），无需拉伸，避免破坏忠实色
+  const scale=255/(hi-lo);
+  for(let i=0;i<n;i++){
+    const p=i*4; if(data[p+3]<40) continue;
+    const L=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2];
+    const L2=(L-lo)*scale;
+    const k=L>0 ? L2/L : 0;
+    if(k>0 && k!==1){ data[p]*=k; data[p+1]*=k; data[p+2]*=k; }   // Uint8ClampedArray 赋值自动截断到 0..255
+  }
+  return data;
+}
+
+/* 确定性 k-means 聚类：把采样像素归并到 K 个簇，返回簇中心色（RGB）。
+   用固定种子的 mulberry32 PRNG 做 k-means++ 初始化（无 Math.random，重渲染结果字节一致），
+   再跑 Lloyd 迭代直到收敛。k-means 比 median cut 更贴合人眼感知的自然色簇
+   （beanpindou.com 照片模式即用 kmeans 采集色彩），簇中心是簇内均色、颜色忠实。 */
+function kmeansCluster(samples, K, maxIter){
+  const N=samples.length;
+  if(N<=K){ const seen=new Set(), out=[]; for(const c of samples){ const key=(c[0]<<16)|(c[1]<<8)|c[2]; if(!seen.has(key)){ seen.add(key); out.push(c.slice()); } } return out; }
+  let seed=0x9E3779B9;
+  const rnd=()=>{ seed|=0; seed=(seed+0x6D2B79F5)|0; let t=Math.imul(seed^(seed>>>15),1|seed); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; };
+  const centers=[];
+  centers.push(samples[(rnd()*N)|0].slice());    // 第一个中心：固定种子随机取一点
+  const D=new Float64Array(N).fill(Infinity);
+  while(centers.length<K){                        // k-means++：按「到最近中心距离平方」加权抽后续中心
+    let sum=0;
+    const c=centers[centers.length-1];
+    for(let i=0;i<N;i++){ const p=samples[i]; const dr=p[0]-c[0],dg=p[1]-c[1],db=p[2]-c[2]; const d=dr*dr+dg*dg+db*db; if(d<D[i]) D[i]=d; sum+=D[i]; }
+    if(sum<=0) break;                             // 采样点已全是现有中心（平图）：提前结束
+    let t=rnd()*sum, idx=0;
+    for(let i=0;i<N;i++){ t-=D[i]; if(t<=0){ idx=i; break; } }
+    centers.push(samples[idx].slice());
+  }
+  // Lloyd 迭代：分配 → 重算中心，直到无像素换簇或达迭代上限
+  const K2=centers.length;
+  const assign=new Int16Array(N);
+  const sr=new Float64Array(K2), sg=new Float64Array(K2), sb=new Float64Array(K2), cc=new Int32Array(K2);
+  for(let iter=0; iter<maxIter; iter++){
+    let changed=0;
+    for(let i=0;i<N;i++){ const p=samples[i]; let best=0, bd=Infinity;
+      for(let k=0;k<K2;k++){ const c=centers[k]; const dr=p[0]-c[0],dg=p[1]-c[1],db=p[2]-c[2]; const d=dr*dr+dg*dg+db*db; if(d<bd){ bd=d; best=k; } }
+      if(assign[i]!==best){ assign[i]=best; changed++; } }
+    if(changed===0 && iter>0) break;
+    sr.fill(0); sg.fill(0); sb.fill(0); cc.fill(0);
+    for(let i=0;i<N;i++){ const k=assign[i], p=samples[i]; sr[k]+=p[0]; sg[k]+=p[1]; sb[k]+=p[2]; cc[k]++; }
+    for(let k=0;k<K2;k++){ if(cc[k]>0) centers[k]=[sr[k]/cc[k], sg[k]/cc[k], sb[k]/cc[k]]; }
+  }
+  return centers;
+}
+
 /* 原图「海报化」：原图是未做风格转换的照片，抗锯齿 / JPEG 高频噪点（尤其纯色背景上的
    浅灰/浅蓝/浅粉杂点）会被逐格匹配成零星异色珠子，肉眼就是「杂色麻点」。
-   做法：(1) 3×3 空间平滑抹掉高频噪点；(2) 中位切分（median cut）把整图归并到 K 个
-   聚类色 —— 纯色背景的细微色差被并成同一块平涂色，主体保留色阶分块。
+   做法：(1) 3×3 空间平滑抹掉高频噪点；(2) 自动对比度拉伸提亮色彩分层；
+   (3) k-means 聚类把整图归并到 K 个簇色 —— 纯色背景的细微色差并成同一平涂色，主体保留色阶分块。
    用聚类色而不是逐通道量化：逐通道粗量化会把浅中性色（如 226,234,240）拍成饱和青
-   （204,255,255），色相严重漂移；聚类色取的是各块的真实均色，颜色忠实。
-   确定性：排序有稳定 tie-break（通道→余下通道→索引），无 Math.random。 */
+   （204,255,255），色相严重漂移；k-means 簇中心取各块真实均色，颜色忠实。
+   确定性：k-means 固定种子初始化，无 Math.random。 */
 function posterizePhoto(data, w, h){
   const n=w*h;
-  const sm=boxBlurRGB(data, w, h, 1);        // 3×3 平滑：抹掉抗锯齿/JPEG 高频杂色
+  const sm=autoContrast(boxBlurRGB(data, w, h, 1), w, h);  // 3×3 平滑抹杂色 → 自动对比度提分层
   const opaque=[];
   for(let i=0;i<n;i++) if(sm[i*4+3]>=40) opaque.push(i);
   if(opaque.length<2) return sm;
-  const K=24;                                 // 中位切分目标簇数（宁多勿少，随后再合并近色簇）
+  const K=24;                                 // k-means 目标簇数（宁多勿少，随后再合并近色簇）
   const MERGE=24;                             // 近色簇合并阈值（RGB 欧氏距离）：把纯色区被切碎的近似色并回一整块
-  // 采样（最多约 4096 个像素）做聚类统计：大图（200×200=4 万像素）若对整排反复排序会到 ~180ms，
-  // 采样后中位切分只需处理几千个点，最后按「最近簇色」回填全图像素，效果几乎一致。
+  // 采样（最多约 4096 个像素）做聚类统计：大图（200×200=4 万像素）逐像素迭代偏慢，
+  // 采样后 k-means 只处理几千个点，最后按「最近簇色」回填全图像素，效果几乎一致。
   const step=Math.max(1, Math.ceil(opaque.length/4096));
   const idxs=[]; for(let i=0;i<opaque.length;i+=step) idxs.push(opaque[i]);
-  const bounds=b=>{
-    let rmin=255,rmax=0,gmin=255,gmax=0,bmin=255,bmax=0;
-    for(const i of b.idx){ const p=i*4, r=sm[p], g=sm[p+1], bl=sm[p+2];
-      if(r<rmin)rmin=r; if(r>rmax)rmax=r; if(g<gmin)gmin=g; if(g>gmax)gmax=g;
-      if(bl<bmin)bmin=bl; if(bl>bmax)bmax=bl; }
-    b.range=Math.max(rmax-rmin, gmax-gmin, bmax-bmin);
-    b.axis=(rmax-rmin>=gmax-gmin && rmax-rmin>=bmax-bmin) ? 0 : (gmax-gmin>=bmax-bmin ? 1 : 2);
-  };
-  let boxes=[{idx:idxs}]; bounds(boxes[0]);
-  while(boxes.length<K){
-    let bi=-1, br=-1;
-    for(let i=0;i<boxes.length;i++){ const b=boxes[i]; if(b.idx.length>1 && b.range>br){ br=b.range; bi=i; } }
-    if(bi<0) break;
-    const b=boxes[bi], ax=b.axis;
-    b.idx.sort((p,q)=>{ const dp=sm[p*4+ax], dq=sm[q*4+ax]; if(dp!==dq) return dp-dq;
-      for(let k=0;k<3;k++){ if(k===ax) continue; const d=sm[p*4+k]-sm[q*4+k]; if(d) return d; }
-      return p-q; });
-    const mid=b.idx.length>>1;
-    const left={idx:b.idx.slice(0,mid)}, right={idx:b.idx.slice(mid)};
-    bounds(left); bounds(right);
-    boxes.splice(bi,1,left,right);
-  }
-  const pal=boxes.map(b=>{ let sr=0,sg=0,sb=0; for(const i of b.idx){ const p=i*4; sr+=sm[p]; sg+=sm[p+1]; sb+=sm[p+2]; } const c=b.idx.length; return [sr/c, sg/c, sb/c]; });
-  const cnt=boxes.map(b=>b.idx.length);
+  const samples=idxs.map(i=>[sm[i*4], sm[i*4+1], sm[i*4+2]]);
+  const pal=kmeansCluster(samples, K, 20);    // 确定性 k-means：簇中心 = 簇内真实均色
+  const cnt=new Float64Array(pal.length);     // 采样点分配到最近簇的像素数（供 MERGE 加权）
+  for(const s of samples){ let best=0, bd=Infinity;
+    for(let k=0;k<pal.length;k++){ const dr=s[0]-pal[k][0],dg=s[1]-pal[k][1],db=s[2]-pal[k][2]; const d=dr*dr+dg*dg+db*db; if(d<bd){ bd=d; best=k; } }
+    cnt[best]++; }
   /* 近色簇合并：反复把距离 < MERGE 的最近一对簇并成一个（按像素数加权平均）。
-     纯色区（背景/主体大色块）的细微色差会被中位切分切成若干近似簇，若不合并，
+     k-means 也可能把纯色区（背景/主体大色块）的细微色差分成若干近似簇，若不合并，
      这些近似色会分别匹配到相邻的不同色号 → 又变成肉眼可见的杂色点。 */
   const grp=pal.map((_,i)=>i);
   for(;;){
