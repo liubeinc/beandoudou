@@ -452,6 +452,10 @@
       </div>
 
       <div class="row">
+        <label class="check" title="CLAHE 限制对比度自适应直方图均衡 + 反锐化掩膜，增强低对比照片的层次与细节；默认关闭，避免误拉伸鲜艳卡通"><input type="checkbox" id="enhance"> 增强对比度与细节（CLAHE + 反锐化）</label>
+      </div>
+
+      <div class="row">
         <label class="check" title="开启：色块平整的海报化效果，消除照片/卡通的高频杂色（适合卡通·插画）；关闭：保留照片渐变，并启用抖动优化让渐变更细腻（适合照片）"><input type="checkbox" id="posterize" checked> 海报化平涂（色块干净 · 去杂色）</label>
       </div>
 
@@ -716,6 +720,7 @@ let PAL = 'mard';
 let MARD_MODE = '291'; // '221' | '291'
 let RGB = [];
 let PR = null, PG = null, PB = null; // 色卡 RGB 平铺数组（匹配内循环，避免对象属性访问）
+let PLA = null, PAA = null, PBA = null; // 色卡 Lab 平铺数组（ΔE76 匹配内循环，避免对象属性访问）
 let matchCache = new Map(); // 颜色→色号 精确缓存（键 = (r<<16)|(g<<8)|b）
 function mardList(){ return MARD_MODE==='221' ? MARD_221 : MARD; }
 function setPalette(key){
@@ -727,7 +732,9 @@ function setPalette(key){
   });
   const n = RGB.length;
   PR = new Int16Array(n); PG = new Int16Array(n); PB = new Int16Array(n);
-  for(let i=0;i<n;i++){ const c=RGB[i]; PR[i]=c.r; PG[i]=c.g; PB[i]=c.b; }
+  PLA = new Float32Array(n); PAA = new Float32Array(n); PBA = new Float32Array(n);
+  for(let i=0;i<n;i++){ const c=RGB[i]; PR[i]=c.r; PG[i]=c.g; PB[i]=c.b;
+    const L=rgbToLab(c.r,c.g,c.b); PLA[i]=L[0]; PAA[i]=L[1]; PBA[i]=L[2]; }
   matchCache = new Map();
 }
 setPalette('mard');
@@ -739,23 +746,28 @@ function codeSort(a,b){
   return a<b?-1:a>b?1:0;
 }
 
-/* ============ 颜色距离（redmean 加权，贴近人眼感知） ============ */
+/* ============ 颜色距离（redmean 加权） ============
+   注意：此 dist() 保留 redmean 刻度，专供「带阈值」的启发式判断复用——
+   背景检测阈值 48、matchStyled 忠实护栏 tol=8、applyColorLimit 合并。
+   这些阈值都是按 redmean 尺度标定的，不能改成 ΔE76（否则要重标全部常量、引入回归）。
+   真正「色号匹配」的距离已在 scanMatch 里改用 CIE Lab ΔE76（见下）。 */
 function dist(r1,g1,b1,r2,g2,b2){
   const rm=(r1+r2)/2;
   const dr=r1-r2, dg=g1-g2, db=b1-b2;
   return Math.sqrt((2+rm/256)*dr*dr + 4*dg*dg + (2+(255-rm)/256)*db*db);
 }
-/* 精确最近邻匹配。优化点（均不改变匹配结果）：
-   1) 平铺数组 + 内联红平方距离，跳过 sqrt（sqrt 单调，argmin 等价），内循环快 3~4 倍；
-   2) 整数输入（无抖动、无调色）走缓存，平面图/卡通命中缓存近乎零成本。
+/* 精确最近邻匹配（CIE Lab ΔE76，感知均匀）。优化点（均不改变匹配结果）：
+   1) 平铺 Lab 数组 + 内联 ΔE²，跳过 sqrt（sqrt 单调，argmin 等价），内循环快 3~4 倍；
+   2) 整数输入（无抖动、无调色）走缓存，平面图/卡通命中缓存近乎零成本；
+      输入色每次只转一次 Lab（rgbToLab），缓存命中时零转换。
    浮点输入（抖动误差累积/调色）直接精确扫描，绝不取整，避免色号漂移到远色。 */
 function scanMatch(r,g,b){
+  const L=rgbToLab(r,g,b);
   let best=0, bd=Infinity;
   const n=RGB.length;
   for(let i=0;i<n;i++){
-    const dr=r-PR[i], dg=g-PG[i], db=b-PB[i];
-    const rm=(r+PR[i])*0.5;
-    const d=(2+rm/256)*dr*dr + 4*dg*dg + (2+(255-rm)/256)*db*db;
+    const dl=L[0]-PLA[i], da=L[1]-PAA[i], db=L[2]-PBA[i];
+    const d=dl*dl + da*da + db*db;
     if(d<bd){ bd=d; best=i; }
   }
   return best;
@@ -859,6 +871,77 @@ function adjust(r,g,b,bri,con,sat){
   return [Math.max(0,Math.min(255,r)),Math.max(0,Math.min(255,g)),Math.max(0,Math.min(255,b))];
 }
 
+/* ============ 增强对比度与细节（CLAHE + USM，默认关） ============
+   替代早先删掉的全局亮度拉伸：全局拉伸会把「窄亮度范围的鲜艳卡通」误拉伸、破坏忠实色；
+   CLAHE 只在局部 tile 内做限制对比度直方图均衡，USM 只做边缘反锐化，二者都温和、不移动色相。 */
+
+/* CLAHE：限制对比度自适应直方图均衡（cv2 参数 clipLimit=2.0、tileGridSize=8×8）。
+   只在亮度通道 Y=0.299R+0.587G+0.114B 做均衡，最后按「原亮度→新亮度比例」缩放 RGB，
+   保色相保饱和（纯亮度缩放，不产生偏色）。双线性插值 4 邻 tile 映射消块。确定性、无随机。 */
+function claheRGB(data, w, h){
+  const n=w*h;
+  const L=new Float32Array(n);
+  for(let i=0;i<n;i++){ const p=i*4; L[i]=0.299*data[p]+0.587*data[p+1]+0.114*data[p+2]; }
+  const TX=8, TY=8;                          // 8×8 个 tile
+  const tw=Math.ceil(w/TX), th=Math.ceil(h/TY);
+  const clip=2.0;                            // clipLimit
+  const maps=new Array(TX*TY);               // 每 tile 的亮度映射 0..255
+  for(let ty=0; ty<TY; ty++) for(let tx=0; tx<TX; tx++){
+    const hist=new Float32Array(256);
+    let cnt=0;
+    const x0=tx*tw, x1=Math.min(w,(tx+1)*tw), y0=ty*th, y1=Math.min(h,(ty+1)*th);
+    for(let y=y0; y<y1; y++) for(let x=x0; x<x1; x++){ const li=Math.min(255, L[y*w+x]|0); hist[li]++; cnt++; }
+    if(cnt<=0){ maps[ty*TX+tx]=new Float32Array(256).fill(0); continue; }
+    // 裁剪到 clip·avg，余量均匀重分配
+    const limit=Math.max(1, clip*cnt/256);
+    let excess=0;
+    for(let k=0;k<256;k++){ if(hist[k]>limit){ excess+=hist[k]-limit; hist[k]=limit; } }
+    const add=excess/256;
+    // CDF → 映射
+    let cdf=0; const map=new Float32Array(256);
+    for(let k=0;k<256;k++){ cdf+=hist[k]+add; map[k]=Math.min(255, (cdf/cnt)*255); }
+    maps[ty*TX+tx]=map;
+  }
+  const out=new Uint8ClampedArray(n*4);
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const i=y*w+x, p=i*4;
+    // 像素中心在 tile 网格上的分数坐标，双线性插值 4 邻 tile 映射
+    let fx=(x+0.5)/tw-0.5, fy=(y+0.5)/th-0.5;
+    let tx0=Math.floor(fx), ty0=Math.floor(fy);
+    if(tx0<0)tx0=0; if(ty0<0)ty0=0;
+    let tx1=tx0+1, ty1=ty0+1; if(tx1>=TX)tx1=TX-1; if(ty1>=TY)ty1=TY-1;
+    const ux=fx-tx0, uy=fy-ty0;
+    const li=Math.min(255, L[i]|0);
+    const v = maps[ty0*TX+tx0][li]*(1-ux)*(1-uy)
+            + maps[ty0*TX+tx1][li]*ux*(1-uy)
+            + maps[ty1*TX+tx0][li]*(1-ux)*uy
+            + maps[ty1*TX+tx1][li]*ux*uy;
+    const k = v / Math.max(1, L[i]);        // 亮度比例：保色相保饱和
+    out[p]=Math.min(255, data[p]*k); out[p+1]=Math.min(255, data[p+1]*k); out[p+2]=Math.min(255, data[p+2]*k); out[p+3]=data[p+3];
+  }
+  return out;
+}
+
+/* USM 反锐化掩膜：out = orig + amount·(orig − blur)。blur 用 3×3 盒均值近似 σ≈1px 高斯。
+   amount=0.8（成熟取值）。Uint8ClampedArray 赋值自动夹取 0..255。确定性、无随机。 */
+function unsharpMask(data, w, h){
+  const blur=boxBlurRGB(data, w, h, 1);
+  const amount=0.8;
+  const n=w*h, out=new Uint8ClampedArray(n*4);
+  for(let i=0;i<n;i++){ const p=i*4;
+    out[p]  =data[p]  +amount*(data[p]  -blur[p]);
+    out[p+1]=data[p+1]+amount*(data[p+1]-blur[p+1]);
+    out[p+2]=data[p+2]+amount*(data[p+2]-blur[p+2]);
+    out[p+3]=data[p+3];
+  }
+  return out;
+}
+
+/* 增强入口：先 CLAHE 提对比度，再 USM 提细节（先对比度后细节，顺序成熟）。 */
+function enhanceContrastDetail(data, w, h){
+  return unsharpMask(claheRGB(data, w, h), w, h);
+}
+
 /* ============ 每风格色彩匹配参数 ============
    mode='none'：不做前置量化。这些风格在匹配色号前已经自行完成「纯净度」收敛
    （原图海报化=median-cut+近簇合并、原图抖动=误差扩散、线稿/素描=黑白灰阶离散、
@@ -925,6 +1008,22 @@ function rgbToOklab(r,g,b){
   ];
 }
 
+/* sRGB → CIE L*a*b*（D65 白点，标准公式）。ΔE76 = Lab 空间欧氏距离，是色号匹配的
+   「成熟落地」度量：感知比 redmean 更均匀，等距离≈等人眼差异，无 redmean 在中性/暖色
+   稀珠区对绝对位置的过敏感。确定性纯函数，无 Math.random。返回 [L,a,b]。 */
+function rgbToLab(r,g,b){
+  const R=r/255, G=g/255, B=b/255;
+  const lr=R<=0.04045?R/12.92:Math.pow((R+0.055)/1.055,2.4);
+  const lg=G<=0.04045?G/12.92:Math.pow((G+0.055)/1.055,2.4);
+  const lb=B<=0.04045?B/12.92:Math.pow((B+0.055)/1.055,2.4);
+  const X=0.4124564*lr+0.3575761*lg+0.1804375*lb;
+  const Y=0.2126729*lr+0.7151522*lg+0.0721750*lb;
+  const Z=0.0193339*lr+0.1191920*lg+0.9503041*lb;
+  const f=t=>t>0.008856?Math.cbrt(t):(7.787*t+16/116);
+  const fx=f(X/0.95047), fy=f(Y/1.0), fz=f(Z/1.08883);
+  return [116*fy-16, 500*(fx-fy), 200*(fy-fz)];
+}
+
 /* 确定性 k-means 聚类（pngquant 式感知量化）：把采样像素归并到 K 个簇，返回簇中心色（RGB）。
    距离用 OkLab 感知空间（rgbToOklab），避免纯 RGB 欧氏把感知不相近的颜色并簇；
    中心仍取 RGB 均值（与下游 redmean 匹配同一把尺子）。k-means++ 用固定种子 mulberry32
@@ -966,6 +1065,29 @@ function kmeansCluster(samples, K, maxIter){
   return centers;
 }
 
+/* 边缘密度重要性图（libimagequant 式）：Sobel 梯度幅值衡量每像素的细节/边缘强度，
+   细节丰富、高对比的边缘区（小面积高亮/纹理）权重大，软归一化到 [0,1]。
+   用于 posterizePhoto 的 MERGE 合并：让小面积但对比强的颜色不因像素少被大色块吞并。
+   确定性、无随机。 */
+function importanceMap(data, w, h){
+  const n=w*h, g=new Float32Array(n);
+  const lum=(x,y)=>{ const q=(y*w+x)*4; return 0.299*data[q]+0.587*data[q+1]+0.114*data[q+2]; };
+  for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
+    const gx = -lum(x-1,y-1)-2*lum(x-1,y)-lum(x-1,y+1)+lum(x+1,y-1)+2*lum(x+1,y)+lum(x+1,y+1);
+    const gy = -lum(x-1,y-1)-2*lum(x,y-1)-lum(x+1,y-1)+lum(x-1,y+1)+2*lum(x,y+1)+lum(x+1,y+1);
+    const m=Math.sqrt(gx*gx+gy*gy);
+    g[y*w+x] = m < 2 ? 0 : m;   // 阈值去噪：平坦区浮点噪声（~1e-13）与 JPEG 微噪判 0，只留真边缘
+  }
+  // 软归一化：只在非零（真边缘）值上取 90 分位做上限，避免平坦区噪声污染分位
+  const nz=[]; for(let i=0;i<n;i++) if(g[i]>0) nz.push(g[i]);
+  if(nz.length===0) return new Float32Array(n);
+  nz.sort((a,b)=>a-b);
+  const cap=nz[Math.floor(nz.length*0.9)]||1;
+  const out=new Float32Array(n);
+  for(let i=0;i<n;i++) out[i]=Math.min(1, g[i]/cap);
+  return out;
+}
+
 /* 原图「海报化」：原图是未做风格转换的照片，抗锯齿 / JPEG 高频噪点（尤其纯色背景上的
    浅灰/浅蓝/浅粉杂点）会被逐格匹配成零星异色珠子，肉眼就是「杂色麻点」。
    做法：(1) 3×3 空间平滑抹掉高频噪点；(2) k-means 聚类把整图归并到 K 个簇色 ——
@@ -976,35 +1098,42 @@ function kmeansCluster(samples, K, maxIter){
 function posterizePhoto(data, w, h){
   const n=w*h;
   const sm=boxBlurRGB(data, w, h, 1);        // 3×3 平滑：抹掉抗锯齿/JPEG 高频杂色
+  const imp=importanceMap(sm, w, h);         // 边缘密度重要性图：小高亮/细节区权重高（供 MERGE 加权）
   const opaque=[];
   for(let i=0;i<n;i++) if(sm[i*4+3]>=40) opaque.push(i);
   if(opaque.length<2) return sm;
   const K=24;                                 // k-means 目标簇数（宁多勿少，随后再合并近色簇）
-  const MERGE=24;                             // 近色簇合并阈值（RGB 欧氏距离）：把纯色区被切碎的近似色并回一整块
   // 采样（最多约 4096 个像素）做聚类统计：大图（200×200=4 万像素）逐像素迭代偏慢，
   // 采样后 k-means 只处理几千个点，最后按「最近簇色」回填全图像素，效果几乎一致。
   const step=Math.max(1, Math.ceil(opaque.length/4096));
   const idxs=[]; for(let i=0;i<opaque.length;i+=step) idxs.push(opaque[i]);
   const samples=idxs.map(i=>[sm[i*4], sm[i*4+1], sm[i*4+2]]);
   const pal=kmeansCluster(samples, K, 20);    // 确定性 k-means：簇中心 = 簇内真实均色
-  const cnt=new Float64Array(pal.length);     // 采样点分配到最近簇的像素数（供 MERGE 加权）
-  for(const s of samples){ let best=0, bd=Infinity;
+  const IMP_W=8;                              // 重要性加权系数：边缘密度高的细节/高亮像素权重更高
+  const wcnt=new Float64Array(pal.length);    // 采样点分配到最近簇的重要性加权计数（供 MERGE 加权）
+  for(const i of idxs){ const s=[sm[i*4], sm[i*4+1], sm[i*4+2]];
+    let best=0, bd=Infinity;
     for(let k=0;k<pal.length;k++){ const dr=s[0]-pal[k][0],dg=s[1]-pal[k][1],db=s[2]-pal[k][2]; const d=dr*dr+dg*dg+db*db; if(d<bd){ bd=d; best=k; } }
-    cnt[best]++; }
-  /* 近色簇合并：反复把距离 < MERGE 的最近一对簇并成一个（按像素数加权平均）。
-     k-means 也可能把纯色区（背景/主体大色块）的细微色差分成若干近似簇，若不合并，
-     这些近似色会分别匹配到相邻的不同色号 → 又变成肉眼可见的杂色点。 */
+    wcnt[best] += 1 + IMP_W*imp[i]; }
+  /* 近色簇合并（重要性加权 + OkLab 感知距离）：反复把距离 < MERGE_E 的最近一对簇并成一个。
+     用 OkLab ΔE 替代原 RGB 欧氏——感知均匀，小面积但颜色不同的高亮簇即使与大簇「RGB 看着近」
+     也会因感知上不同而保留；簇中心按重要性加权平均（wcnt）。
+     对纯色区被切碎的近似色（JPEG 噪声），OkLab 平滑，仍会在阈值内并回一整块，不回归杂色控制。 */
+  const palLab=pal.map(c=>rgbToOklab(c[0],c[1],c[2]));
+  const MERGE_E=0.03;                         // 近色簇合并阈值（OkLab 感知距离，≈ΔE76~3 的「刚可分辨」级）：只并真正近同色簇
   const grp=pal.map((_,i)=>i);
   for(;;){
-    let bi=-1,bj=-1,bd=MERGE*MERGE;
+    let bi=-1,bj=-1,bd=MERGE_E*MERGE_E;
     for(let i=0;i<grp.length;i++){ if(grp[i]!==i) continue;
       for(let j=i+1;j<grp.length;j++){ if(grp[j]!==j) continue;
-        const d=(pal[i][0]-pal[j][0])**2+(pal[i][1]-pal[j][1])**2+(pal[i][2]-pal[j][2])**2;
+        const dl=palLab[i][0]-palLab[j][0], da=palLab[i][1]-palLab[j][1], db=palLab[i][2]-palLab[j][2];
+        const d=dl*dl+da*da+db*db;
         if(d<bd){ bd=d; bi=i; bj=j; } } }
     if(bi<0) break;
-    const wa=cnt[bi], wb=cnt[bj], wt=wa+wb;
+    const wa=wcnt[bi], wb=wcnt[bj], wt=wa+wb;
     pal[bi]=[(pal[bi][0]*wa+pal[bj][0]*wb)/wt, (pal[bi][1]*wa+pal[bj][1]*wb)/wt, (pal[bi][2]*wa+pal[bj][2]*wb)/wt];
-    cnt[bi]=wt; grp[bj]=bi;
+    palLab[bi]=rgbToOklab(pal[bi][0],pal[bi][1],pal[bi][2]);
+    wcnt[bi]=wt; grp[bj]=bi;
   }
   // 收集存活簇的最终色板，再按「最近簇色」回填全图像素（含未参与采样的像素）
   const finalPal=[]; for(let k=0;k<pal.length;k++) if(grp[k]===k) finalPal.push(pal[k]);
@@ -1139,6 +1268,9 @@ function generate(commit, lowRes){
     octx.drawImage(img,0,0,imgW,imgH,0,0,w,h);
   }
   let data=octx.getImageData(0,0,w,h).data;
+
+  // 增强对比度与细节（可选，默认关）：CLAHE + USM，在风格/海报化之前、对原始采样像素做
+  if($('enhance').checked) data = enhanceContrastDetail(data, w, h);
 
   // 风格预处理（线稿/素描/卡通/水彩/水墨/彩铅/油画）：在匹配色号前先转换像素
   // 原图：海报化预处理（空间平滑 + 中位切分归并色）→ 消除高频杂色，得到干净的大色块
@@ -1755,6 +1887,7 @@ pickImg.addEventListener('click',pickFromImg);
 pickUndo.addEventListener('click',()=>{ bgColors.pop(); renderBgSwatches(); generate(false); });
 pickClear.addEventListener('click',()=>{ bgColors=[]; renderBgSwatches(); generate(false); });
 pickDone.addEventListener('click',()=>{ $('removeBg').checked=true; $('bgPick').style.display='flex'; $('bgContigRow').style.display='block'; renderBgSwatches(); closePickPanel(true); });
+$('enhance').addEventListener('change',()=>generate());
 $('posterize').addEventListener('change',()=>generate());
 $('flatBg').addEventListener('change',()=>generate());
 const DEFAULTS={ width:60, height:60, colorLimit:48, brightness:0, contrast:0, saturation:0 };
@@ -2602,7 +2735,7 @@ function saveSettings(){
     keepRatio:$('keepRatio').checked, colorLimit:+$('colorLimit').value,
     shape:$('shape').querySelector('.on').dataset.v,
     removeBg:$('removeBg').checked, bgContig:$('bgContig').checked, posterize:$('posterize').checked,
-    flatBg:$('flatBg').checked,
+    flatBg:$('flatBg').checked, enhance:$('enhance').checked,
     brightness:+$('brightness').value, contrast:+$('contrast').value, saturation:+$('saturation').value,
     style:STYLE, styleAmount:+$('styleAmount').value, viewOriginal:viewOriginal,
     crop: crop, bgColors: bgColors
@@ -2637,6 +2770,7 @@ function restoreSettings(){
   if(typeof d.posterize==='boolean') $('posterize').checked=d.posterize;
   else if(typeof d.dither==='boolean') $('posterize').checked=!d.dither; // 旧设置迁移：旧「抖动」开 = 新「海报化」关
   if(typeof d.flatBg==='boolean') $('flatBg').checked=d.flatBg;
+  if(typeof d.enhance==='boolean') $('enhance').checked=d.enhance;
   if(d.brightness!=null){ $('brightness').value=d.brightness; $('briVal').textContent=d.brightness; }
   if(d.contrast!=null){ $('contrast').value=d.contrast; $('conVal').textContent=d.contrast; }
   if(d.saturation!=null){ $('saturation').value=d.saturation; $('satVal').textContent=d.saturation; }
