@@ -1300,8 +1300,27 @@ function aggregateSalient(srcData, sw, sh, w, h){
       }
       const sep=Math.sqrt((ar-br)*(ar-br)+(ag-bg)*(ag-bg)+(ab-bb)*(ab-bb));
       if(sep < SEP || ca===0 || cb===0){ out[oi]=mr; out[oi+1]=mg; out[oi+2]=mb; continue; }
-      if(ca>=cb){ out[oi]=car/ca; out[oi+1]=cag/ca; out[oi+2]=cab/ca; }
-      else { out[oi]=cbr/cb; out[oi+1]=cbg/cb; out[oi+2]=cbb/cb; }
+      // 主色簇取「簇心色」而非全体均值：全体均值会被另一簇的抗锯齿边界像素拉偏。
+      // 典型：白点占多数的格子，均值里混进红帽的边界像素 → 偏暖白 → 匹配成暖白 H12；
+      // 改取「离簇心不超过平均距离」的内层像素均值 → 白点回到纯白 H2（其它色块几乎不变）。
+      const useA = ca>=cb;
+      const kr = useA?ar:br, kg = useA?ag:bg, kb = useA?ab:bb;
+      let dsum=0, dcn=0;
+      for(const i of idx){ const p=i*4; const r=srcData[p],g=srcData[p+1],b=srcData[p+2];
+        const da=(r-ar)*(r-ar)+(g-ag)*(g-ag)+(b-ab)*(b-ab);
+        const db2=(r-br)*(r-br)+(g-bg)*(g-bg)+(b-bb)*(b-bb);
+        if((da<=db2)!==useA) continue;
+        dsum+=Math.sqrt((r-kr)*(r-kr)+(g-kg)*(g-kg)+(b-kb)*(b-kb)); dcn++; }
+      const dmean = dcn? dsum/dcn : 0;
+      let cr2=0,cg2=0,cb2=0,ccn=0;
+      for(const i of idx){ const p=i*4; const r=srcData[p],g=srcData[p+1],b=srcData[p+2];
+        const da=(r-ar)*(r-ar)+(g-ag)*(g-ag)+(b-ab)*(b-ab);
+        const db2=(r-br)*(r-br)+(g-bg)*(g-bg)+(b-bb)*(b-bb);
+        if((da<=db2)!==useA) continue;
+        const d=Math.sqrt((r-kr)*(r-kr)+(g-kg)*(g-kg)+(b-kb)*(b-kb));
+        if(d<=dmean){ cr2+=r; cg2+=g; cb2+=b; ccn++; } }
+      if(ccn){ out[oi]=cr2/ccn; out[oi+1]=cg2/ccn; out[oi+2]=cb2/ccn; }
+      else { out[oi]=useA?car/ca:cbr/cb; out[oi+1]=useA?cag/ca:cbg/cb; out[oi+2]=useA?cab/ca:cbb/cb; }
     }
   }
   return out;
