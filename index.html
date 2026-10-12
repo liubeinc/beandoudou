@@ -1247,6 +1247,136 @@ function updateFlatBgHint(cells, total){
   el.textContent = cells ? `已识别背景 ${cells} 格（${Math.round(cells/total*100)}%）` : '未识别到大面积背景';
 }
 
+/* 高分辨率「主色聚合」：替代原来「直接缩到 w×h 取区域均值」的降采样。
+   原降采样把每格区域压成一个均值像素——比一颗豆还小的特征（白点/反光/细线）会被周围色平均掉
+   （红底白点整格被摊成粉红）。改成：先把原图缩到一个「够细」的分辨率（长边 ≤ srcMax，远大于网格），
+   再逐格取「主色簇」——格内像素做 k=2 两簇：均匀格用均值；有明显双峰的格取「占多数那一簇」的均色。
+   于是白点在它占多数的格子里被整格还原为白（而不是被平均成粉红），而它占少数的格子取红——
+   小特征被缩到自己的核心格但不消失（这正是「像素画/珠子图」想要的硬边效果）。
+   注：不用「最显著簇」——当小特征在某格里反而占多数时，「取少数派」会把该格判成背景色（结果反转）。
+   返回 w×h 像素（每格一个 RGBA）。确定性纯函数，无 Math.random。 */
+function aggregateSalient(srcData, sw, sh, w, h){
+  const out=new Uint8ClampedArray(w*h*4);
+  const UNI=20, SEP=26;   // UNI：格内最大离均差 < UNI 视为均匀；SEP：两簇中心距离 < SEP 视为无实质双峰
+  for(let cy=0;cy<h;cy++){
+    const y0=Math.floor(cy*sh/h), y1=Math.max(y0+1, Math.floor((cy+1)*sh/h));
+    for(let cx=0;cx<w;cx++){
+      const x0=Math.floor(cx*sw/w), x1=Math.max(x0+1, Math.floor((cx+1)*sw/w));
+      const oi=(cy*w+cx)*4;
+      const idx=[];
+      let sr=0,sg=0,sb=0,sa=0,cnt=0;
+      for(let y=y0;y<y1;y++) for(let x=x0;x<x1;x++){
+        const i=y*sw+x, p=i*4; cnt++; sa+=srcData[p+3];
+        if(srcData[p+3]<40) continue;
+        idx.push(i); sr+=srcData[p]; sg+=srcData[p+1]; sb+=srcData[p+2];
+      }
+      out[oi+3]=Math.round(sa/cnt);
+      const n=idx.length;
+      if(n===0) continue;
+      const mr=sr/n, mg=sg/n, mb=sb/n;
+      // 均匀性：格内像素与均值的最大距离
+      let maxd=0;
+      for(const i of idx){ const p=i*4; const dr=srcData[p]-mr,dg=srcData[p+1]-mg,db=srcData[p+2]-mb;
+        const d=dr*dr+dg*dg+db*db; if(d>maxd)maxd=d; }
+      if(maxd < UNI*UNI){ out[oi]=mr; out[oi+1]=mg; out[oi+2]=mb; continue; }
+      // k=2 两簇：种子 = 距均值最远点 A、距 A 最远点 B；迭代 3 次
+      let ai=idx[0], fd=-1;
+      for(const i of idx){ const p=i*4; const dr=srcData[p]-mr,dg=srcData[p+1]-mg,db=srcData[p+2]-mb;
+        const d=dr*dr+dg*dg+db*db; if(d>fd){fd=d; ai=i;} }
+      const ap=ai*4; let ar=srcData[ap],ag=srcData[ap+1],ab=srcData[ap+2];
+      let bi=idx[0], fd2=-1;
+      for(const i of idx){ const p=i*4; const dr=srcData[p]-ar,dg=srcData[p+1]-ag,db=srcData[p+2]-ab;
+        const d=dr*dr+dg*dg+db*db; if(d>fd2){fd2=d; bi=i;} }
+      const bp=bi*4; let br=srcData[bp],bg=srcData[bp+1],bb=srcData[bp+2];
+      let ca=0,cb=0, car=0,cag=0,cab=0, cbr=0,cbg=0,cbb=0;
+      for(let it=0;it<3;it++){
+        ca=cb=car=cag=cab=cbr=cbg=cbb=0;
+        for(const i of idx){ const p=i*4; const r=srcData[p],g=srcData[p+1],b=srcData[p+2];
+          const da=(r-ar)*(r-ar)+(g-ag)*(g-ag)+(b-ab)*(b-ab);
+          const db2=(r-br)*(r-br)+(g-bg)*(g-bg)+(b-bb)*(b-bb);
+          if(da<=db2){ ca++; car+=r; cag+=g; cab+=b; } else { cb++; cbr+=r; cbg+=g; cbb+=b; } }
+        if(ca){ ar=car/ca; ag=cag/ca; ab=cab/ca; }
+        if(cb){ br=cbr/cb; bg=cbg/cb; bb=cbb/cb; }
+      }
+      const sep=Math.sqrt((ar-br)*(ar-br)+(ag-bg)*(ag-bg)+(ab-bb)*(ab-bb));
+      if(sep < SEP || ca===0 || cb===0){ out[oi]=mr; out[oi+1]=mg; out[oi+2]=mb; continue; }
+      if(ca>=cb){ out[oi]=car/ca; out[oi+1]=cag/ca; out[oi+2]=cab/ca; }
+      else { out[oi]=cbr/cb; out[oi+1]=cbg/cb; out[oi+2]=cbb/cb; }
+    }
+  }
+  return out;
+}
+
+/* 小特征贴花：把「网格没能表示出来的小特征」补回网格。
+   做法：拿「聚合后的理想网格」（w×h，见 aggregateSalient）当作「网格能表示的画面」，
+   与细采样原图逐像素比较——残差大的像素就是被分辨率丢掉的细节（白点/反光/细线）。
+   对残差做连通域，只保留「小、紧凑、不细长」的斑块（大块/细长的多是正常边缘，交给正常网格），
+   每个斑块贴到其质心所在格，颜色取斑块内残差最大的像素原色——保证小特征至少占 1 颗豆。
+   基准用「聚合后的理想网格」而不是「海报化后的最终网格」：海报化是用户主动开的简化，
+   拿它当基准会把「简化掉的」也当成丢失特征、到处乱贴（实测照片色数会翻倍）。
+   放在「颜色数量限制 / 形状裁切」之后执行，避免小特征被低频色合并掉。确定性，无随机。 */
+function stampSmallFeatures(srcData, sw, sh, w, h, aggData, grid){
+  const n=sw*sh;
+  const sal=new Uint8Array(n), sm=new Int32Array(n), ST=60;
+  for(let y=0;y<sh;y++){
+    const gy=Math.min(h-1, Math.floor(y*h/sh));
+    for(let x=0;x<sw;x++){
+      const i=y*sw+x, p=i*4; sm[i]=-1;
+      if(srcData[p+3]<40) continue;
+      const q=(gy*w+Math.min(w-1, Math.floor(x*w/sw)))*4;
+      if(aggData[q+3]<40) continue;
+      const dr=srcData[p]-aggData[q], dg=srcData[p+1]-aggData[q+1], db=srcData[p+2]-aggData[q+2];
+      const d=dr*dr+dg*dg+db*db;
+      if(d>ST*ST){ sal[i]=1; sm[i]=d; }
+    }
+  }
+  const cellPx=(sw/w)*(sh/h);
+  const maxArea=Math.max(6, Math.round(cellPx*4));                 // 超过约 4 个格子 → 不是小特征
+  const minArea=Math.max(2, Math.round(cellPx*0.2));
+  const maxSpan=Math.max(2, Math.round(Math.max(sw/w, sh/h)*3));   // 跨度超过约 3 格 → 不是小特征
+  const seen=new Uint8Array(n), stack=new Int32Array(n);
+  for(let i=0;i<n;i++){
+    if(!sal[i]||seen[i]) continue;
+    let sp=0; stack[sp++]=i; seen[i]=1;
+    let cnt=0,csx=0,csy=0,mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9, bestI=i, bestS=-1;
+    while(sp>0){ const c=stack[--sp]; cnt++;
+      const x=c%sw, y=(c/sw)|0;
+      csx+=x; csy+=y; if(sm[c]>bestS){ bestS=sm[c]; bestI=c; }
+      if(x<mnx)mnx=x; if(x>mxx)mxx=x; if(y<mny)mny=y; if(y>mxy)mxy=y;
+      if(x>0 && sal[c-1] && !seen[c-1]){ seen[c-1]=1; stack[sp++]=c-1; }
+      if(x<sw-1 && sal[c+1] && !seen[c+1]){ seen[c+1]=1; stack[sp++]=c+1; }
+      if(y>0 && sal[c-sw] && !seen[c-sw]){ seen[c-sw]=1; stack[sp++]=c-sw; }
+      if(y<sh-1 && sal[c+sw] && !seen[c+sw]){ seen[c+sw]=1; stack[sp++]=c+sw; }
+    }
+    if(cnt<minArea || cnt>maxArea) continue;
+    const bw=mxx-mnx+1, bh=mxy-mny+1;
+    if(cnt/(bw*bh) < 0.4) continue;                                // 太稀 → 散点
+    if(Math.max(bw,bh) > 3*Math.min(bw,bh)) continue;              // 太细长 → 是边缘，不是斑块
+    if(bw>maxSpan || bh>maxSpan) continue;
+    // 孤立性：斑块外扩 2px 的环带颜色是否均匀——只有「平底上的小特征」才贴。
+    // 照片纹理处每个格子的少数派都会留残差，若不加这一条，照片会被贴出一堆杂色（实测色数翻倍）。
+    let rr=0,rg=0,rb=0,rn=0, qr=0,qg=0,qb=0;
+    for(let y=Math.max(0,mny-2); y<=Math.min(sh-1,mxy+2); y++) for(let x=Math.max(0,mnx-2); x<=Math.min(sw-1,mxx+2); x++){
+      const c=y*sw+x; if(sal[c]) continue;
+      const p=c*4; if(srcData[p+3]<40) continue;
+      const r=srcData[p], g=srcData[p+1], b=srcData[p+2];
+      rr+=r; rg+=g; rb+=b; rn++; qr+=r*r; qg+=g*g; qb+=b*b;
+    }
+    if(rn<4) continue;
+    const vr=qr/rn-(rr/rn)*(rr/rn), vg=qg/rn-(rg/rn)*(rg/rn), vb=qb/rn-(rb/rn)*(rb/rn);
+    if(Math.sqrt(Math.max(0,vr)+Math.max(0,vg)+Math.max(0,vb))>20) continue; // 周围太花 → 不是「平底上的小特征」
+    // 贴到质心所在格，颜色取斑块内残差最大的像素原色
+    const cx=Math.min(w-1, Math.floor((csx/cnt)*w/sw));
+    const cy=Math.min(h-1, Math.floor((csy/cnt)*h/sh));
+    const gi=cy*w+cx;
+    if(grid[gi]<0) continue;                                       // 形状/去背景已置空，别复活
+    const bp=bestI*4, mr=srcData[bp], mg=srcData[bp+1], mb=srcData[bp+2];
+    const cur=RGB[grid[gi]];
+    if(Math.abs(mr-cur.r)+Math.abs(mg-cur.g)+Math.abs(mb-cur.b) < 60) continue; // 与当前格色太接近，无需贴
+    grid[gi]=matchStyled(mr,mg,mb,STYLE);
+  }
+}
+
 function generate(commit, lowRes){
   if(!img) return;
   if(!lowRes && previewRAF){ cancelAnimationFrame(previewRAF); previewRAF=0; previewPending=false; }
@@ -1261,17 +1391,30 @@ function generate(commit, lowRes){
   const dither = STYLE==='orig' && !$('posterize').checked; // 风格化处理（线稿/素描/卡通/水彩/水墨/彩铅/油画）需要平涂清晰，自动关闭抖动
   const bri=+$('brightness').value, con=+$('contrast').value, sat=+$('saturation').value;
 
-  // 采样：把原图（或裁切区域）缩到 w×h
-  const off=document.createElement('canvas'); off.width=w; off.height=h;
-  const octx=off.getContext('2d');
-  octx.imageSmoothingEnabled=true; octx.imageSmoothingQuality='high';
-  if(crop){
-    const sx=crop.x*imgW, sy=crop.y*imgH, sw=crop.w*imgW, sh=crop.h*imgH;
-    octx.drawImage(img, sx,sy,sw,sh, 0,0,w,h);
+  // 采样：拖拽中的低清预览走原来的「直接缩到 w×h」（快）；松手后的正式出图走
+  // 「高分辨率细采样 + 显著性聚合」（见 aggregateSalient）——比一颗豆小的特征不再被均值抹掉。
+  const cw0 = crop ? crop.w*imgW : imgW, ch0 = crop ? crop.h*imgH : imgH;
+  let srcData=null, ssw=0, ssh=0, aggData=null, data;
+  if(lowRes){
+    const off=document.createElement('canvas'); off.width=w; off.height=h;
+    const octx=off.getContext('2d');
+    octx.imageSmoothingEnabled=true; octx.imageSmoothingQuality='high';
+    if(crop){ octx.drawImage(img, crop.x*imgW, crop.y*imgH, cw0, ch0, 0,0,w,h); }
+    else { octx.drawImage(img,0,0,imgW,imgH,0,0,w,h); }
+    data=octx.getImageData(0,0,w,h).data;
   } else {
-    octx.drawImage(img,0,0,imgW,imgH,0,0,w,h);
+    const srcMax=Math.min(768, Math.max(512, 3*Math.max(w,h)));
+    const sc=Math.min(1, srcMax/Math.max(cw0,ch0));
+    ssw=Math.max(1, Math.round(cw0*sc)); ssh=Math.max(1, Math.round(ch0*sc));
+    const off=document.createElement('canvas'); off.width=ssw; off.height=ssh;
+    const octx=off.getContext('2d');
+    octx.imageSmoothingEnabled=true; octx.imageSmoothingQuality='high';
+    if(crop){ octx.drawImage(img, crop.x*imgW, crop.y*imgH, cw0, ch0, 0,0,ssw,ssh); }
+    else { octx.drawImage(img,0,0,imgW,imgH,0,0,ssw,ssh); }
+    srcData=octx.getImageData(0,0,ssw,ssh).data;
+    data=aggregateSalient(srcData, ssw, ssh, w, h);
+    aggData=data; // 聚合后的「理想网格」：贴花拿它当基准，只补「分辨率丢掉的」特征，不补「海报化主动简化的」
   }
-  let data=octx.getImageData(0,0,w,h).data;
 
   // 增强对比度与细节（可选，默认关）：CLAHE + USM，在风格/海报化之前、对原始采样像素做
   if($('enhance').checked) data = enhanceContrastDetail(data, w, h);
@@ -1362,6 +1505,10 @@ function generate(commit, lowRes){
 
   // 形状裁切（置空形状外格）
   for(let y=0;y<h;y++) for(let x=0;x<w;x++){ if(!shapeKeep(x,y,w,h,shape)) grid[y*w+x]=-1; }
+
+  // 小特征贴花：把细采样图上「小而显著、孤立」的斑块贴回网格，保证至少占 1 颗豆。
+  // 放在颜色数量限制 / 形状裁切之后，避免小特征（白点等）被低频色合并掉或被裁掉后复活。
+  if(srcData) stampSmallFeatures(srcData, ssw, ssh, w, h, aggData, grid);
 
   renderPreview(lowRes);
   buildStats();
