@@ -460,6 +460,10 @@
       </div>
 
       <div class="row">
+        <label class="check" title="把小色块（斑点/高光等）统一吸附成圆盘模板，并抹平大色块边缘的单格毛刺，让形状规整一致；细线和线稿不受影响"><input type="checkbox" id="regularize" checked> 形状规整（小色块统一圆盘 · 去边缘毛刺）</label>
+      </div>
+
+      <div class="row">
         <label class="check" title="自动识别与画面边缘相连的大面积同色区域，整块用最接近的单一色号平涂，且不参与抖动"><input type="checkbox" id="flatBg"> 背景平涂（大面积色块用单色，不抖动）</label>
         <span class="bg-hint" id="flatBgHint"></span>
       </div>
@@ -1396,6 +1400,125 @@ function stampSmallFeatures(srcData, sw, sh, w, h, aggData, grid){
   }
 }
 
+/* 形状规整（1+2+3 合并版）：一次连通域分析 + 两个分支，共用同一套分类判据。
+   - 小特征（面积小 · 紧凑 · 与周围反差大）→ 统一替换成「圆盘模板」：
+     同样大小的特征形状一致，不再出现 2×2 / 十字 / 缺角各不相同（这就是「斑点形状不一」的根因）。
+   - 大色块 → 边界清理：去掉孤立单格 + 3×3 众数平滑；只动「厚」的色块，细线/线稿不碰。
+   两个分支共用同一份连通域与分类结果，所以不会互相打架（若先滤波后模板，滤波会把要保的小特征先抹掉）。
+   放在颜色数量限制 / 形状裁切之后，保证模板化的小特征不会再被低频色合并掉。确定性、无随机。 */
+function regularizeGrid(grid, w, h){
+  const n=w*h;
+  const comp=new Int32Array(n).fill(-1);
+  const st=new Int32Array(n);
+  const area=[], bx0=[], by0=[], bx1=[], by1=[], col=[], csx=[], csy=[];
+  for(let i=0;i<n;i++){
+    if(comp[i]>=0 || grid[i]<0) continue;
+    const id=area.length, c=grid[i];
+    let sp=0; st[sp++]=i; comp[i]=id;
+    let a=0, ax0=w, ay0=h, ax1=-1, ay1=-1, sx=0, sy=0;
+    while(sp>0){
+      const p=st[--sp]; a++; const x=p%w, y=(p/w)|0;
+      sx+=x; sy+=y;
+      if(x<ax0)ax0=x; if(x>ax1)ax1=x; if(y<ay0)ay0=y; if(y>ay1)ay1=y;
+      if(x>0    && comp[p-1]<0 && grid[p-1]===c){ comp[p-1]=id; st[sp++]=p-1; }
+      if(x<w-1  && comp[p+1]<0 && grid[p+1]===c){ comp[p+1]=id; st[sp++]=p+1; }
+      if(y>0    && comp[p-w]<0 && grid[p-w]===c){ comp[p-w]=id; st[sp++]=p-w; }
+      if(y<h-1  && comp[p+w]<0 && grid[p+w]===c){ comp[p+w]=id; st[sp++]=p+w; }
+    }
+    area.push(a); bx0.push(ax0); by0.push(ay0); bx1.push(ax1); by1.push(ay1); col.push(c); csx.push(sx); csy.push(sy);
+  }
+  const m=area.length;
+  // 内部格（四邻都在同色块内）：占比低 = 细线/窄条，别动它（线稿、描边靠这条保命）
+  const inner=new Int32Array(m);
+  for(let i=0;i<n;i++){
+    const id=comp[i]; if(id<0) continue;
+    const x=i%w, y=(i/w)|0;
+    if(x>0&&x<w-1&&y>0&&y<h-1 && comp[i-1]===id && comp[i+1]===id && comp[i-w]===id && comp[i+w]===id) inner[id]++;
+  }
+  // 分类：小特征 / 细线 / 大色块
+  const FEAT_MAX=20, FEAT_CONTRAST=30;
+  const isFeat=new Uint8Array(m), isThin=new Uint8Array(m), ringOf=new Int32Array(m).fill(-1);
+  const rcnt=new Map();
+  for(let id=0;id<m;id++){
+    const a=area[id], bw=bx1[id]-bx0[id]+1, bh=by1[id]-by0[id]+1;
+    if(a>=3 && inner[id] < Math.max(1, a*0.15)) isThin[id]=1;
+    if(a>FEAT_MAX || a/(bw*bh)<0.45 || Math.max(bw,bh) > 2*Math.min(bw,bh)) continue;   // 太大/太稀/太细长 → 不是小特征
+    // 环带主色（外扩 1 格内出现最多的「非本块」颜色）
+    rcnt.clear();
+    for(let y=Math.max(0,by0[id]-1); y<=Math.min(h-1,by1[id]+1); y++)
+      for(let x=Math.max(0,bx0[id]-1); x<=Math.min(w-1,bx1[id]+1); x++){
+        const j=y*w+x; if(comp[j]===id || grid[j]<0) continue;
+        rcnt.set(grid[j], (rcnt.get(grid[j])||0)+1);
+      }
+    let rc=-1, bc=0; rcnt.forEach((v,k)=>{ if(v>bc){bc=v; rc=k;} });
+    if(rc<0) continue;
+    const ci=col[id];   // 用色卡的 Lab 算感知反差（PLA/PAA/PBA 与色卡同步）
+    const dE=Math.sqrt((PLA[ci]-PLA[rc])**2 + (PAA[ci]-PAA[rc])**2 + (PBA[ci]-PBA[rc])**2);
+    if(dE < FEAT_CONTRAST) continue;   // 跟周围差不多的碎块是噪声，交给大色块分支去抹
+    isFeat[id]=1; ringOf[id]=rc;
+  }
+  // 圆盘模板：按面积取「格数最接近的圆盘」，而不是固定 1/5/9/13 四档。
+  // 固定档位在特征格数跨档时会给出大小差很多的圆（如 15→13、18→21），看起来还是不一致；
+  // 连续半径则保证「同一个形状（圆），尺寸跟着面积走」，41/60/80 各分辨率都稳。
+  const discCache=new Map();
+  const discFor=a=>{
+    let cached=discCache.get(a); if(cached) return cached;
+    let bo=[[0,0]], bd=1e9;
+    for(let r=0;r<=4.001;r+=0.1){
+      const off=[[0,0]], R2=r*r;
+      for(let dy=-4;dy<=4;dy++) for(let dx=-4;dx<=4;dx++){
+        if((dx||dy) && dx*dx+dy*dy<=R2) off.push([dx,dy]);
+      }
+      const d=Math.abs(off.length-a);
+      if(d<bd){ bd=d; bo=off; }
+      if(bd===0) break;
+    }
+    discCache.set(a,bo);
+    return bo;
+  };
+  // 分支 B：大色块边界清理（先跑，基于原始网格；跳过小特征与细线）
+  const out=grid.slice();
+  const stamp=new Int32Array(RGB.length), cntA=new Int32Array(RGB.length);
+  let tick=0;
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const i=y*w+x, id=comp[i];
+    if(id<0 || isFeat[id] || isThin[id]) continue;
+    const c=grid[i];
+    // 孤立单格（去噪点 / 补单格孔洞）：四邻同色且与自己不同 → 并入
+    if(x>0&&x<w-1&&y>0&&y<h-1){
+      const a=grid[i-1];
+      if(a>=0 && a===grid[i+1] && a===grid[i-w] && a===grid[i+w] && a!==c){ out[i]=a; continue; }
+    }
+    // 3×3 众数平滑：邻域里某色占 ≥6/9 且与自己不同 → 改成该色（抹平边界单格毛刺）
+    tick++; let best=c, bc=0;
+    for(let dy=-1;dy<=1;dy++){ const ny=y+dy; if(ny<0||ny>=h) continue;
+      for(let dx=-1;dx<=1;dx++){ const nx=x+dx; if(nx<0||nx>=w) continue;
+        const v=grid[ny*w+nx]; if(v<0) continue;
+        let k; if(stamp[v]===tick){ k=++cntA[v]; } else { stamp[v]=tick; k=cntA[v]=1; }
+        if(k>bc){ bc=k; best=v; } } }
+    if(best!==c && bc>=6) out[i]=best;
+  }
+  // 分支 A：小特征 → 圆盘模板（后跑，覆盖到大色块分支改过的格子上也没关系）
+  for(let id=0;id<m;id++){
+    if(!isFeat[id]) continue;
+    const cx=Math.round(csx[id]/area[id]), cy=Math.round(csy[id]/area[id]);
+    const disc=discFor(area[id]);
+    // 保护：模板覆盖到的「非本块」格必须都是同一个环带色（否则太挤，跳过）
+    let ok=true;
+    for(let k=0;k<disc.length;k++){ const x=cx+disc[k][0], y=cy+disc[k][1];
+      if(x<0||y<0||x>=w||y>=h){ ok=false; break; }
+      const j=y*w+x; if(comp[j]===id) continue;
+      if(grid[j]!==ringOf[id]){ ok=false; break; } }
+    if(!ok) continue;
+    // 先把本块原有的格子清成环带色——否则原块比圆盘多出来的零碎格会留在旁边，形状又不规整了
+    for(let y=by0[id]; y<=by1[id]; y++) for(let x=bx0[id]; x<=bx1[id]; x++){
+      const j=y*w+x; if(comp[j]===id) out[j]=ringOf[id];
+    }
+    for(let k=0;k<disc.length;k++){ const j=(cy+disc[k][1])*w+(cx+disc[k][0]); out[j]=col[id]; }
+  }
+  return out;
+}
+
 function generate(commit, lowRes){
   if(!img) return;
   if(!lowRes && previewRAF){ cancelAnimationFrame(previewRAF); previewRAF=0; previewPending=false; }
@@ -1527,7 +1650,11 @@ function generate(commit, lowRes){
 
   // 小特征贴花：把细采样图上「小而显著、孤立」的斑块贴回网格，保证至少占 1 颗豆。
   // 放在颜色数量限制 / 形状裁切之后，避免小特征（白点等）被低频色合并掉或被裁掉后复活。
-  if(srcData) stampSmallFeatures(srcData, ssw, ssh, w, h, aggData, grid);
+  if(srcData){
+    stampSmallFeatures(srcData, ssw, ssh, w, h, aggData, grid);
+    // 形状规整：小特征统一成圆盘 + 大色块去边缘毛刺（放在限色/裁切之后，小特征不会被再合并掉）
+    if($('regularize').checked) grid=regularizeGrid(grid, w, h);
+  }
 
   renderPreview(lowRes);
   buildStats();
@@ -2059,6 +2186,7 @@ pickClear.addEventListener('click',()=>{ bgColors=[]; renderBgSwatches(); genera
 pickDone.addEventListener('click',()=>{ $('removeBg').checked=true; $('bgPick').style.display='flex'; $('bgContigRow').style.display='block'; renderBgSwatches(); closePickPanel(true); });
 $('enhance').addEventListener('change',()=>generate());
 $('posterize').addEventListener('change',()=>generate());
+$('regularize').addEventListener('change',()=>generate());
 $('flatBg').addEventListener('change',()=>generate());
 const DEFAULTS={ width:60, height:60, colorLimit:48, brightness:0, contrast:0, saturation:0 };
 function resetSliders(ids){
@@ -2905,7 +3033,7 @@ function saveSettings(){
     keepRatio:$('keepRatio').checked, colorLimit:+$('colorLimit').value,
     shape:$('shape').querySelector('.on').dataset.v,
     removeBg:$('removeBg').checked, bgContig:$('bgContig').checked, posterize:$('posterize').checked,
-    flatBg:$('flatBg').checked, enhance:$('enhance').checked,
+    flatBg:$('flatBg').checked, enhance:$('enhance').checked, regularize:$('regularize').checked,
     brightness:+$('brightness').value, contrast:+$('contrast').value, saturation:+$('saturation').value,
     style:STYLE, styleAmount:+$('styleAmount').value, viewOriginal:viewOriginal,
     crop: crop, bgColors: bgColors
@@ -2941,6 +3069,7 @@ function restoreSettings(){
   else if(typeof d.dither==='boolean') $('posterize').checked=!d.dither; // 旧设置迁移：旧「抖动」开 = 新「海报化」关
   if(typeof d.flatBg==='boolean') $('flatBg').checked=d.flatBg;
   if(typeof d.enhance==='boolean') $('enhance').checked=d.enhance;
+  if(typeof d.regularize==='boolean') $('regularize').checked=d.regularize;
   if(d.brightness!=null){ $('brightness').value=d.brightness; $('briVal').textContent=d.brightness; }
   if(d.contrast!=null){ $('contrast').value=d.contrast; $('conVal').textContent=d.contrast; }
   if(d.saturation!=null){ $('saturation').value=d.saturation; $('satVal').textContent=d.saturation; }
