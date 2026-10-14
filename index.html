@@ -1400,6 +1400,99 @@ function stampSmallFeatures(srcData, sw, sh, w, h, aggData, grid){
   }
 }
 
+/* 邻域共识（治本）：斑点被抗锯齿拆成多个近色号后，下游所有依赖「严格同色号连通域」的阶段
+   （小特征贴花、形状规整）就只看得见斑点里最大的那一小块，整块斑点从来没作为「一个连通域」出现过。
+   这里在匹配之后、其它阶段之前，把「同一个视觉特征」的碎格统一成单色连通块。
+
+   判据必须落在「簇」这一级，不能落在「分量」这一级——80×80 蘑菇实测踩过的坑：
+     · 白点被拆成 H2:5 + H12/H17/H18/H19/H21/P1/P19/D16/C27/E16/E17 等 1~3 格碎片；
+       若按「单个分量的环带对比度」判，H2 核心的环带主色恰恰是**同一颗白点的其它碎片**，
+       对比度只有 ΔE ~6，永远过不了门槛 → 一颗都并不了（实测只并成 1/4 颗）。
+     · 提到簇一级后：白点碎片 + 核心在「颜色 ΔE ≤ TOL 且 8-邻接」下并成一簇（~15~18 格），
+       簇的环带主色才是红帽 F25 → 对比度 ΔE 80，显著。
+     · 红帽上的 F13/F25 抖动：F13 与 F25 只差 ΔE ~10 ≤ TOL → 连同整个帽子并成一个上千格的大簇，
+       对比度 ≈ 0 → 不显著 → 原样保留（抖动渐变不被拍平）。
+     · 天空 C13 与抖动网点 D17/C21/C23 同理并入大簇 → 不显著。
+     · 孤立单格分量自成 1 格簇、自身即主导色 → 恒等于原样，天然无副作用。
+   于是规则是：**小簇（总格数 ≤ CLUSTER_MAX）且对外高对比（≥ CONTRAST）→ 整簇统一成主导分量之色**。
+   这直接让斑点重新成为「单色连通块」，后续 stampSmallFeatures / regularizeGrid 才看得见它。
+   确定性、无随机。 */
+function consensusGrid(grid, w, h){
+  const n=w*h, out=grid.slice();
+  const dE=(a,b)=>{ const dl=PLA[a]-PLA[b], da=PAA[a]-PAA[b], db=PBA[a]-PBA[b]; return Math.sqrt(dl*dl+da*da+db*db); };
+  const TOL=16, CLUSTER_MAX=60, CONTRAST=30;
+  // ① 同色号 4-连通分量（与 regularizeGrid 同口径）
+  const comp=new Int32Array(n).fill(-1), st=new Int32Array(n);
+  const csize=[], ccol=[];
+  for(let i=0;i<n;i++){
+    if(comp[i]>=0 || grid[i]<0) continue;
+    const id=csize.length, c=grid[i];
+    let sp=0; st[sp++]=i; comp[i]=id; let cnt=0;
+    while(sp>0){ const p=st[--sp]; cnt++; const x=p%w, y=(p/w)|0;
+      if(x>0   && comp[p-1]<0 && grid[p-1]===c){ comp[p-1]=id; st[sp++]=p-1; }
+      if(x<w-1 && comp[p+1]<0 && grid[p+1]===c){ comp[p+1]=id; st[sp++]=p+1; }
+      if(y>0   && comp[p-w]<0 && grid[p-w]===c){ comp[p-w]=id; st[sp++]=p-w; }
+      if(y<h-1 && comp[p+w]<0 && grid[p+w]===c){ comp[p+w]=id; st[sp++]=p+w; }
+    }
+    csize.push(cnt); ccol.push(c);
+  }
+  const nc=csize.length;
+  // ② 分量并簇：颜色 ΔE ≤ TOL 且 8-邻接（同一视觉特征的近色变体 / 抗锯齿碎片）
+  const par=new Int32Array(nc); for(let i=0;i<nc;i++) par[i]=i;
+  const find=i=>{ while(par[i]!==i){ par[i]=par[par[i]]; i=par[i]; } return i; };
+  const uni=(a,b)=>{ a=find(a); b=find(b); if(a!==b) par[b]=a; };
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const ci=comp[y*w+x]; if(ci<0) continue;
+    for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){
+      if(!dx && !dy) continue;
+      const nx=x+dx, ny=y+dy; if(nx<0||ny<0||nx>=w||ny>=h) continue;
+      const cj=comp[ny*w+nx]; if(cj<0 || cj===ci) continue;
+      if(find(ci)===find(cj)) continue;
+      if(dE(ccol[ci],ccol[cj])<=TOL) uni(ci,cj);
+    }
+  }
+  // ③ 簇统计：总格数 + 主导分量（格数最多者）及其色号
+  const rmap=new Int32Array(nc).fill(-1);
+  const rtot=[], rdom=[], rcol=[];
+  for(let id=0; id<nc; id++){
+    const r=find(id); let ri=rmap[r];
+    if(ri<0){ ri=rtot.length; rmap[r]=ri; rtot.push(0); rdom.push(id); rcol.push(ccol[id]); }
+    rtot[ri]+=csize[id];
+    if(csize[id]>csize[rdom[ri]]){ rdom[ri]=id; rcol[ri]=ccol[id]; }
+  }
+  // ④ 只给「小簇」算对外环带主色 → 对比度（簇内格不算背景；大簇直接跳过，省算力）
+  const ncl=rtot.length, rings=new Array(ncl), rcon=new Float64Array(ncl);
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const ci=comp[y*w+x]; if(ci<0) continue;
+    const r=rmap[find(ci)];
+    if(rtot[r]>CLUSTER_MAX) continue;
+    for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){
+      if(!dx && !dy) continue;
+      const nx=x+dx, ny=y+dy; if(nx<0||ny<0||nx>=w||ny>=h) continue;
+      const cj=comp[ny*w+nx]; if(cj<0) continue;
+      if(rmap[find(cj)]===r) continue;               // 簇内格不是「背景」
+      const g=grid[ny*w+nx];
+      if(rings[r]===undefined) rings[r]=new Map();
+      rings[r].set(g,(rings[r].get(g)||0)+1);
+    }
+  }
+  for(let r=0;r<ncl;r++){
+    const ring=rings[r]; if(ring===undefined) continue;
+    let best=-1, bc=0;
+    ring.forEach((v,k)=>{ if(v>bc || (v===bc && (best<0 || k<best))){ bc=v; best=k; } });
+    rcon[r] = best<0 ? 0 : dE(rcol[r], best);
+  }
+  // ⑤ 应用：小簇 + 高对比 → 整簇统一成主导色
+  for(let i=0;i<n;i++){
+    const ci=comp[i]; if(ci<0) continue;
+    const r=rmap[find(ci)];
+    if(rtot[r]>CLUSTER_MAX || rcon[r]<CONTRAST) continue;
+    const dom=rcol[r];
+    if(dom!==grid[i]) out[i]=dom;
+  }
+  return out;
+}
+
 /* 形状规整（1+2+3 合并版）：一次连通域分析 + 两个分支，共用同一套分类判据。
    - 小特征（面积小 · 紧凑 · 与周围反差大）→ 统一替换成「圆盘模板」：
      同样大小的特征形状一致，不再出现 2×2 / 十字 / 缺角各不相同（这就是「斑点形状不一」的根因）。
@@ -1436,7 +1529,9 @@ function regularizeGrid(grid, w, h){
     if(x>0&&x<w-1&&y>0&&y<h-1 && comp[i-1]===id && comp[i+1]===id && comp[i-w]===id && comp[i+w]===id) inner[id]++;
   }
   // 分类：小特征 / 细线 / 大色块
-  const FEAT_MAX=20, FEAT_CONTRAST=30;
+  // FEAT_MAX 从 20 提到 40：颗粒数一上来，白点本身就长到 20 格以上，
+  // 卡在 20 就整块跳过模板 → 四颗点又大小各异（94 颗往上必现）。
+  const FEAT_MAX=40, FEAT_CONTRAST=30;
   const isFeat=new Uint8Array(m), isThin=new Uint8Array(m), ringOf=new Int32Array(m).fill(-1);
   const rcnt=new Map();
   for(let id=0;id<m;id++){
@@ -1457,6 +1552,23 @@ function regularizeGrid(grid, w, h){
     if(dE < FEAT_CONTRAST) continue;   // 跟周围差不多的碎块是噪声，交给大色块分支去抹
     isFeat[id]=1; ringOf[id]=rc;
   }
+  // 同色近尺寸的特征归成一组，用组内「中位面积」当圆盘尺寸：
+  // 同一张图上四颗一样大的白点，采样相位不同会让格数差 2~5（15/18、22/24…），
+  // 各自取最近圆盘就会跳档（13 vs 21），看着就是「同一张图斑点大小不一」。
+  const sizeOf=new Int32Array(m);
+  for(let id=0;id<m;id++) sizeOf[id]=area[id];
+  {
+    const byCol=new Map();
+    for(let id=0;id<m;id++){ if(!isFeat[id]) continue; const k=col[id]; if(!byCol.has(k)) byCol.set(k,[]); byCol.get(k).push(id); }
+    byCol.forEach(list=>{
+      const s=list.slice().sort((a,b)=>area[a]-area[b]);
+      let g=[s[0]];
+      const flush=()=>{ const med=area[g[(g.length-1)>>1]]; for(const id of g) sizeOf[id]=med; };
+      for(let i=1;i<s.length;i++){ if(area[s[i]] <= area[s[i-1]]*1.5) g.push(s[i]); else { flush(); g=[s[i]]; } }
+      flush();
+    });
+  }
+  const GUARD_TOL=5;   // 圆盘 footprint 内允许出现的「非环带色」格数上限
   // 圆盘模板：按面积取「格数最接近的圆盘」，而不是固定 1/5/9/13 四档。
   // 固定档位在特征格数跨档时会给出大小差很多的圆（如 15→13、18→21），看起来还是不一致；
   // 连续半径则保证「同一个形状（圆），尺寸跟着面积走」，41/60/80 各分辨率都稳。
@@ -1470,7 +1582,9 @@ function regularizeGrid(grid, w, h){
         if((dx||dy) && dx*dx+dy*dy<=R2) off.push([dx,dy]);
       }
       const d=Math.abs(off.length-a);
-      if(d<bd){ bd=d; bo=off; }
+      // 平局取「大」的那个：面积 11 格时 9 格圆盘和 13 格圆盘一样接近，
+      // 若取小的，同一张图上 11 格的斑点变 3×3、12 格的变 13 格圆盘 → 又不一样了。
+      if(d<=bd){ bd=d; bo=off; }
       if(bd===0) break;
     }
     discCache.set(a,bo);
@@ -1498,18 +1612,29 @@ function regularizeGrid(grid, w, h){
         if(k>bc){ bc=k; best=v; } } }
     if(best!==c && bc>=6) out[i]=best;
   }
-  // 分支 A：小特征 → 圆盘模板（后跑，覆盖到大色块分支改过的格子上也没关系）
+  // 分支 A：小特征 → 圆盘模板。
+  // 先收集全部命中项，再按面积「从小到大」落盘：颗粒数一上来，白点边上会粘着
+  // 一格的近白杂点（H10 之类），它本身也是一个「小特征」；若让它在圆盘之后落盘，
+  // 就会把圆盘啃掉两格 → 又变成 11 格的不规则块。小的先画、大的后画，圆盘才是最终形状。
+  const hits=[];
   for(let id=0;id<m;id++){
     if(!isFeat[id]) continue;
     const cx=Math.round(csx[id]/area[id]), cy=Math.round(csy[id]/area[id]);
-    const disc=discFor(area[id]);
-    // 保护：模板覆盖到的「非本块」格必须都是同一个环带色（否则太挤，跳过）
-    let ok=true;
+    const disc=discFor(sizeOf[id]);
+    // 保护：模板覆盖到的「非本块」格，最多允许 GUARD_TOL 格不是环带色（再挤就跳过）。
+    // 原来要求「必须全是环带色」——颗粒数一大，边缘全是抗锯齿混色，这条永远不成立，
+    // 模板一次都不触发，四颗点只能保持采样出来的 15/15/15/18。
+    let ok=true, other=0;
     for(let k=0;k<disc.length;k++){ const x=cx+disc[k][0], y=cy+disc[k][1];
       if(x<0||y<0||x>=w||y>=h){ ok=false; break; }
       const j=y*w+x; if(comp[j]===id) continue;
-      if(grid[j]!==ringOf[id]){ ok=false; break; } }
-    if(!ok) continue;
+      if(grid[j]!==ringOf[id]) other++; }
+    if(!ok || other>GUARD_TOL) continue;
+    hits.push({id,cx,cy,disc});
+  }
+  hits.sort((p,q)=>area[p.id]-area[q.id]);
+  for(const hh of hits){
+    const id=hh.id, cx=hh.cx, cy=hh.cy, disc=hh.disc;
     // 先把本块原有的格子清成环带色——否则原块比圆盘多出来的零碎格会留在旁边，形状又不规整了
     for(let y=by0[id]; y<=by1[id]; y++) for(let x=bx0[id]; x<=bx1[id]; x++){
       const j=y*w+x; if(comp[j]===id) out[j]=ringOf[id];
@@ -1600,6 +1725,10 @@ function generate(commit, lowRes){
       spread(1,0,7/16); spread(0,1,5/16); spread(-1,1,3/16); spread(1,1,1/16);
     }
   }
+
+  // 邻域共识（治本）：先把被抗锯齿拆碎的斑点并回单色连通块，
+  // 否则后面的小特征贴花 / 形状规整只看得见斑点里最大的那一小块，整块斑点永远规整不了。
+  grid=consensusGrid(grid,w,h);
 
   // 去背景：优先用「手动拾取」的背景色列表；未拾取时退回四角平均色。
   // 对比「原始像素」而非匹配后的色号色，更贴合拾取到的背景；阈值放宽以覆盖近白等 JPEG 噪声
