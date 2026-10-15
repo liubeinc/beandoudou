@@ -468,6 +468,10 @@
         <span class="bg-hint" id="flatBgHint"></span>
       </div>
 
+      <div class="row">
+        <label class="check" title="先在网格图上定出轮廓边界，再按「一块区域一个色号」填内部颜色：轮廓连续、纯色区不再散成多个近似色号、纯色底不再撒噪点。卡通·插画最佳；水彩/油画/彩铅这类笔触风格会被拍平，载入时自动关闭"><input type="checkbox" id="regionFill" checked> 区域分割填色（先定轮廓 · 再填内部色）</label>
+      </div>
+
       <div class="export-bar" id="exportBar" style="display:none">
         <div class="split-group">
           <div class="split-btn">
@@ -1026,6 +1030,18 @@ function rgbToLab(r,g,b){
   const f=t=>t>0.008856?Math.cbrt(t):(7.787*t+16/116);
   const fx=f(X/0.95047), fy=f(Y/1.0), fz=f(Z/1.08883);
   return [116*fy-16, 500*(fx-fy), 200*(fy-fz)];
+}
+/* CIELab → sRGB（rgbToLab 的逆，D65）。用于「沿 L 轴压暗描边色」这类需要在感知空间改亮度、
+   再回到 RGB 重新匹配色号的场合。越界值夹到 [0,255]。 */
+function labToRgb(L,a,b){
+  const fy=(L+16)/116, fx=fy+a/500, fz=fy-b/200;
+  const g=t=>{ const t3=t*t*t; return t3>0.008856?t3:(t-16/116)/7.787; };
+  const X=0.95047*g(fx), Y=1.0*g(fy), Z=1.08883*g(fz);
+  const r= 3.2404542*X-1.5371385*Y-0.4985314*Z;
+  const gg=-0.9692660*X+1.8760108*Y+0.0415560*Z;
+  const bb= 0.0556434*X-0.2040259*Y+1.0572252*Z;
+  const s=t=>{ t=t<=0.0031308?12.92*t:1.055*Math.pow(t,1/2.4)-0.055; return Math.max(0,Math.min(255,Math.round(t*255))); };
+  return [s(r), s(gg), s(bb)];
 }
 
 /* 确定性 k-means 聚类（pngquant 式感知量化）：把采样像素归并到 K 个簇，返回簇中心色（RGB）。
@@ -1655,7 +1671,10 @@ function generate(commit, lowRes){
   const removeBg=$('removeBg').checked;
   // 原图两种模式二选一（互斥）：海报化平涂（默认，色块干净去杂色）/ 抖动优化（保留渐变，但纯色区会有抖动麻点）
   const posterize = STYLE==='orig' && $('posterize').checked;
-  const dither = STYLE==='orig' && !$('posterize').checked; // 风格化处理（线稿/素描/卡通/水彩/水墨/彩铅/油画）需要平涂清晰，自动关闭抖动
+  // 区域分割填色：先定轮廓边界、再识别内部颜色（每区一个色号）。开了它就不需要抖动——
+  // 抖动正是「同一片纯色区散成多个色号」的来源，与「一区一色」直接冲突。
+  const regionFill = $('regionFill').checked;
+  const dither = STYLE==='orig' && !$('posterize').checked && !regionFill; // 风格化处理（线稿/素描/卡通/水彩/水墨/彩铅/油画）需要平涂清晰，自动关闭抖动
   const bri=+$('brightness').value, con=+$('contrast').value, sat=+$('saturation').value;
 
   // 采样：拖拽中的低清预览走原来的「直接缩到 w×h」（快）；松手后的正式出图走
@@ -1692,8 +1711,9 @@ function generate(commit, lowRes){
   else if(STYLE) data=applyStyle(data, w, h, STYLE, +$('styleAmount').value);
   sourceData = data; // 留存「采样+风格后」原图像素，供原图对照
 
-  // 背景自动识别 + 平涂（可选）：大面积连通色块整块用单一色号，且不参与抖动 → 背景干净无杂色
-  const flatBg = $('flatBg').checked ? detectBgFlat(data, w, h, bri, con, sat) : null;
+  // 背景自动识别 + 平涂（可选）：大面积连通色块整块用单一色号，且不参与抖动 → 背景干净无杂色。
+  // 区域分割模式下背景本就是整块单色（分区已内建），再跑一遍是重复劳动，直接跳过。
+  const flatBg = (!regionFill && $('flatBg').checked) ? detectBgFlat(data, w, h, bri, con, sat) : null;
   if(flatBg){
     let bgCells=0;
     for(let i=0;i<w*h;i++) if(flatBg[i]>=0) bgCells++;
@@ -1702,6 +1722,11 @@ function generate(commit, lowRes){
 
   gridW=w; gridH=h;
   grid=new Array(w*h);
+  if(regionFill){
+    // 区域分割填色：先定轮廓边界 → 再用它把网格分区、每区一个色号（拖拽预览走同一套，逻辑一致）
+    const mask = gridEdgeMask(data, w, h);
+    grid = regionFillGrid(data, w, h, mask, {bri, con, sat, STYLE});
+  } else {
   // 抖动误差缓冲（Floyd-Steinberg 需记录各像素累计 RGB 误差，用 Float32Array 存 r/g/b）
   const err = dither ? new Float32Array(w*h*3) : null;
   for(let i=0;i<w*h;i++){
@@ -1724,6 +1749,7 @@ function generate(commit, lowRes){
       const spread=(dx,dy,k)=>{ const nx=x+dx, ny=y+dy; if(nx<0||nx>=w||ny<0||ny>=h) return; const ni=ny*w+nx; if(data[ni*4+3]<40) return; if(flatBg && flatBg[ni]>=0) return; err[ni*3]+=er*k; err[ni*3+1]+=eg*k; err[ni*3+2]+=eb*k; };
       spread(1,0,7/16); spread(0,1,5/16); spread(-1,1,3/16); spread(1,1,1/16);
     }
+  }
   }
 
   // 邻域共识（治本）：先把被抗锯齿拆碎的斑点并回单色连通块，
@@ -2137,6 +2163,7 @@ function loadFile(f){
     $('hVal').textContent=$('height').value;
     updateDims(+$('width').value,+$('height').value);
     if(detectFlat()) $('posterize').checked=true; // 平面图自动启用海报化平涂
+    autoRegionFill();                             // 平面图自动启用区域分割填色（笔触风格除外）
     generate();
     saveProjectImage();
     if(isCoarse()) $('genBar').classList.add('show');
@@ -2317,6 +2344,15 @@ $('enhance').addEventListener('change',()=>generate());
 $('posterize').addEventListener('change',()=>generate());
 $('regularize').addEventListener('change',()=>generate());
 $('flatBg').addEventListener('change',()=>generate());
+// 区域分割填色：用户手动拨过一次之后，智能识别不再覆盖他的选择（否则下次载图会被改回去）
+let regionFillManual=false;
+$('regionFill').addEventListener('change',()=>{ regionFillManual=true; saveSettings(); generate(); });
+/* 智能识别（默认开 + 自动判）：平面图（色数少/大片同色）自动开区域分割；水彩/油画/彩铅这类
+   笔触风格叠加后会被拍平，排除。用户手动拨过就完全交给用户。 */
+function autoRegionFill(){
+  if(regionFillManual) return;
+  $('regionFill').checked = detectFlat() && !['water','oil','pencil'].includes(STYLE);
+}
 const DEFAULTS={ width:60, height:60, colorLimit:48, brightness:0, contrast:0, saturation:0 };
 function resetSliders(ids){
   ids.forEach(id=>{ $(id).value=DEFAULTS[id]; });
@@ -2688,7 +2724,7 @@ function sobelRGBmax(data, w, h){
 }
 /* 先提轮廓再分区：梯度脊线（非极大抑制 + 补洞）作分隔 → 4 邻域标记连通区 → 取「相邻区域不同」处为线。
    线由区域边界得出，因此**天然闭合**，不会出现断点；且线宽固定 1 格。 */
-function regionMap(data, w, h, frac, minThr, gateFrac, absCap){
+function regionMap(data, w, h, frac, minThr, gateFrac, absCap, minAreaOverride){
   const n=w*h;
   const {mag, gxs, gys, maxM}=sobelRGBmax(data, w, h);
   const edge=new Uint8Array(n);
@@ -2775,7 +2811,7 @@ function regionMap(data, w, h, frac, minThr, gateFrac, absCap){
     if(!ch) break;
   }
   // 小碎块（面积不足）并入颜色最接近的邻居：否则褶皱/噪点切出的 1~3 格孤立区会变成黑麻点
-  const minArea=Math.max(3, Math.round(n*0.0008));
+  const minArea=(minAreaOverride!=null) ? minAreaOverride : Math.max(3, Math.round(n*0.0008));
   const parent=new Int32Array(sums.length);
   for(let i=0;i<parent.length;i++) parent[i]=i;
   const find=a=>{ while(parent[a]!==a){ parent[a]=parent[parent[a]]; a=parent[a]; } return a; };
@@ -2846,6 +2882,301 @@ function regionMap(data, w, h, frac, minThr, gateFrac, absCap){
     if(b) line[i]=1;
   }
   return {lab, line, sums, strength, gate, edge, thr};
+}
+
+/* ============ 区域分割填色（先定轮廓边界 · 再识别内部颜色） ============
+   「orig」的逐格独立匹配没有「区域」概念：同一片纯色区里相邻格因抗锯齿/聚合差异落到不同色号
+   （米色身体散成 M7/M8/M9/N6…），细于一颗豆的描边又被 aggregateSalient 在格内取多数簇时稀释掉。
+   这里把已有的 regionMap 分割能力接到「色号分配」这一步（此前只有 styleQban/styleAnime 拿它画风格）：
+     ① 先定轮廓边界 —— regionMap 在网格级 data 上给出天然闭合的区域边界线（见 gridEdgeMask）；
+     ② 再识别内部颜色 —— 用这条线把网格分区，每区取区域均值 → adjust → matchStyled，一个区一个色号；
+     ③ 颜色取自**风格化之后**的 data，所以线稿/卡通/动漫等风格叠加后填色仍取该风格的实际颜色。
+   确定性、无随机。 */
+
+/* ① 定轮廓边界：在网格上跑 regionMap（Sobel → 方向 NMS 脊线 → 距离 2 补桥 → 4 连通分区 →
+   区域边界即「线」）。线由区域边界得出，因此**天然闭合**，不会出现断点。
+   为什么在网格上而不是高分辨率原图上：一开始按「高分辨率描边更宽、脊线更真」的思路做，
+   实测反而更差——高分辨率（尤其带水印/JPEG 噪点的截图）跑出来的脊线又粗又碎，降到网格后到处是
+   缺口，泛洪从缺口漏进主体（水豚图实测主体与背景并成一块，整张糊掉）。而网格级 data 已过
+   「显著性聚合 + 海报化」，描边本就是干净的深色格，regionMap 给出的线连续闭合、也不漏。
+   确定性、无随机。 */
+function gridEdgeMask(data, w, h, opt){
+  const o=Object.assign({frac:0.15, absCap:160, minRegion:20}, opt||{});
+  const n=w*h;
+  // minArea 传 2：regionMap 默认会把「面积 < n*0.0008」的小区域并进邻居，那正好会把白点、眼睛
+  // 这类小特征在分区阶段就抹掉（蘑菇红伞上的白点就是这么没的）。这里要的是「小区域先留着」，
+  // 该不该并交给下游 regionFillGrid 用「高对比小区域保留」的规则去判。
+  const {lab}=regionMap(data, w, h, o.frac, 20, 0.42, o.absCap, 2);
+  const size=new Map(), bb=new Map();
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const L=lab[y*w+x]; if(L<0) continue;
+    size.set(L,(size.get(L)||0)+1);
+    const b=bb.get(L);
+    if(!b) bb.set(L,{x0:x,x1:x,y0:y,y1:y});
+    else { if(x<b.x0)b.x0=x; if(x>b.x1)b.x1=x; if(y<b.y0)b.y0=y; if(y>b.y1)b.y1=y; }
+  }
+  const big=L=>L>=0 && (size.get(L)||0)>=o.minRegion;
+  // 「特征区」= 面积小**且紧凑**（填满外接框一半以上）的小块：白点/眼睛/高光。这类区不画线，
+  // 留成独立的区，交给下游 regionFillGrid 的「高对比小区域保留」规则处理。
+  // 面积小但细长的小区（描边带自成一区、被切碎的轮廓段）不算特征——它们恰恰是必须画成线的东西。
+  const feature=new Set();
+  size.forEach((s,L)=>{
+    if(s>=o.minRegion) return;
+    const b=bb.get(L), bw=b.x1-b.x0+1, bh=b.y1-b.y0+1;
+    if(s/(bw*bh)>=0.5) feature.add(L);
+  });
+  const mask=new Uint8Array(n);
+  for(let i=0;i<n;i++){
+    const L=lab[i];
+    if(L<0){ mask[i]=1; continue; }              // 没归到任何区的脊线格：就是线本身
+    if(feature.has(L)) continue;                 // 紧凑小特征：留成独立的区，不画线
+    // 线 = 两个区的边界，只要其中一边是「大区」就画。要求两边都是大区（原写法）会漏：
+    // 细描边带常被 regionMap 切成面积 <minRegion 的小区，夹在两个大区中间时两边都不算「大区」，
+    // 整条描边就不画线了 —— 泛洪从缺口漏出去，主体与背景并成一块（水豚图实测 5958/6720 格）。
+    const x=i%w, y=(i/w)|0;
+    let b=false;
+    for(let dy=-1;dy<=1&&!b;dy++){
+      const ny=y+dy; if(ny<0||ny>=h) continue;
+      for(let dx=-1;dx<=1;dx++){
+        if(!dx&&!dy) continue;
+        const nx=x+dx; if(nx<0||nx>=w) continue;
+        const L2=lab[ny*w+nx];
+        if(L2!==L && (big(L)||big(L2))){ b=true; break; }
+      }
+    }
+    if(b) mask[i]=1;
+  }
+  return mask;
+}
+
+/* ② 用边界掩码把网格分区，每区取一个色号，轮廓格取描边色（过浅时沿 Lab 的 L 轴自动加深）。 */
+function regionFillGrid(data, w, h, ec, opt){
+  const n=w*h;
+  const o=Object.assign({bri:0, con:0, sat:0, STYLE:'orig'}, opt||{});
+  const MIN_REGION=Math.max(2, Math.round(n*0.0004));
+  const FEAT_CONTRAST=30;   // 高对比小区域不并入（保住眼睛/高光），复用 regularizeGrid 的常量
+  const LINE_MIN_D=25;      // 描边色与相邻区填色的最小 ΔE，不足则自动加深
+  const isEdge=i=> (ec && ec[i]) ? 1 : 0;
+  const lab=new Int32Array(n).fill(-1);
+  const sums=[];
+  for(let i=0;i<n;i++) if(data[i*4+3]<40) lab[i]=-2;   // 透明格：不参与分区
+  // 分区：4 连通泛洪，不可穿过边界格
+  const q=new Int32Array(n);
+  for(let i=0;i<n;i++){
+    if(lab[i]!==-1 || isEdge(i)) continue;
+    const id=sums.length;
+    let qh=0, qt=0; q[qt++]=i; lab[i]=id;
+    let sr=0,sg=0,sb=0,cnt=0;
+    while(qh<qt){
+      const k=q[qh++], p=k*4;
+      sr+=data[p]; sg+=data[p+1]; sb+=data[p+2]; cnt++;
+      const x=k%w, y=(k/w)|0;
+      const push=j=>{ if(lab[j]!==-1 || isEdge(j)) return; lab[j]=id; q[qt++]=j; };
+      if(x>0) push(k-1);
+      if(x<w-1) push(k+1);
+      if(y>0) push(k-w);
+      if(y<h-1) push(k+w);
+    }
+    sums.push([sr,sg,sb,cnt]);
+  }
+  const m=sums.length;
+  // 邻接：被 1 格宽的描边隔开的两区在 4 邻域下并不相邻，必须借「共用的边界格」建立邻接。
+  const adj=[]; for(let i=0;i<m;i++) adj.push(new Set());
+  const link=(a,b)=>{ if(a>=0&&b>=0&&a!==b){ adj[a].add(b); adj[b].add(a); } };
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const i=y*w+x;
+    if(lab[i]>=0){
+      if(x+1<w) link(lab[i], lab[i+1]);
+      if(y+1<h) link(lab[i], lab[i+w]);
+      continue;
+    }
+    if(!isEdge(i)) continue;
+    const ids=[];
+    for(let dy=-1;dy<=1;dy++){ const ny=y+dy; if(ny<0||ny>=h) continue;
+      for(let dx=-1;dx<=1;dx++){ const nx=x+dx; if(nx<0||nx>=w) continue;
+        const L=lab[ny*w+nx]; if(L>=0) ids.push(L); } }
+    for(let a=0;a<ids.length;a++) for(let b=a+1;b<ids.length;b++) link(ids[a], ids[b]);
+  }
+  // 小区域并入颜色最近的邻区；但「与最近邻区 ΔE ≥ FEAT_CONTRAST」的高对比小区域是真特征（眼睛/高光），保留
+  const parent=new Int32Array(m); for(let i=0;i<m;i++) parent[i]=i;
+  const find=a=>{ while(parent[a]!==a){ parent[a]=parent[parent[a]]; a=parent[a]; } return a; };
+  const meanOf=id=>{ const s=sums[id]; return [s[0]/s[3], s[1]/s[3], s[2]/s[3]]; };
+  const small=[];
+  for(let i=0;i<m;i++) if(sums[i][3]<MIN_REGION) small.push(i);
+  small.sort((a,b)=>sums[a][3]-sums[b][3]);
+  for(const id of small){
+    const ra=find(id); if(sums[ra][3]>=MIN_REGION) continue;
+    const ma=meanOf(ra), la=rgbToLab(ma[0],ma[1],ma[2]);
+    let best=-1, bd=Infinity, nearD=Infinity;
+    for(const nb0 of adj[id]){
+      const rb=find(nb0); if(rb===ra) continue;
+      const mb=meanOf(rb), lb=rgbToLab(mb[0],mb[1],mb[2]);
+      const d=Math.sqrt((la[0]-lb[0])**2+(la[1]-lb[1])**2+(la[2]-lb[2])**2);
+      if(d<nearD) nearD=d;
+      if(d<bd){ bd=d; best=rb; }
+    }
+    if(best<0 || nearD>=FEAT_CONTRAST) continue;
+    parent[ra]=best;
+    const s=sums[best]; s[0]+=sums[ra][0]; s[1]+=sums[ra][1]; s[2]+=sums[ra][2]; s[3]+=sums[ra][3];
+  }
+  for(let i=0;i<n;i++){ const L=lab[i]; if(L>=0) lab[i]=find(L); }
+  // 每区一个色号。直接取区域均值会被区内的小特征拉偏——蘑菇红伞上的白点会把整把伞的均值
+  // 拉成粉色。所以先按「逐格匹配的众数」定基准色，再用「与基准色同色号的那些格」的均值定最终色：
+  // 既稳（少数小特征影响不到基准）又准（均值比单个格更接近真色）。
+  const percell=new Int32Array(n).fill(-1);
+  for(let i=0;i<n;i++){
+    if(data[i*4+3]<40) continue;   // 边界格也要算：小特征常常整块被线吃掉，救援时得认得出来
+    const p=i*4;
+    const a=adjust(data[p], data[p+1], data[p+2], o.bri, o.con, o.sat);
+    percell[i]=matchStyled(a[0], a[1], a[2], o.STYLE);
+  }
+  const maj=new Map();
+  {
+    const cnt=new Map();
+    for(let i=0;i<n;i++){
+      const L=lab[i]; if(L<0 || percell[i]<0) continue;
+      let m=cnt.get(L); if(!m){ m=new Map(); cnt.set(L,m); }
+      m.set(percell[i], (m.get(percell[i])||0)+1);
+    }
+    cnt.forEach((m,L)=>{ let bk=-1, bc=0; m.forEach((v,k)=>{ if(v>bc || (v===bc && (bk<0 || k<bk))){ bc=v; bk=k; } }); maj.set(L,bk); });
+  }
+  const grid=new Array(n).fill(-1);
+  const fill=new Map();
+  {
+    const acc=new Map();
+    for(let i=0;i<n;i++){
+      const L=lab[i]; if(L<0 || percell[i]!==maj.get(L)) continue;
+      let t=acc.get(L); if(!t){ t=[0,0,0,0]; acc.set(L,t); }
+      const p=i*4; t[0]+=data[p]; t[1]+=data[p+1]; t[2]+=data[p+2]; t[3]++;
+    }
+    maj.forEach((code,L)=>{
+      const t=acc.get(L);
+      if(!t){ fill.set(L, code); return; }
+      const a=adjust(t[0]/t[3], t[1]/t[3], t[2]/t[3], o.bri, o.con, o.sat);
+      fill.set(L, matchStyled(a[0], a[1], a[2], o.STYLE));
+    });
+  }
+  for(let i=0;i<n;i++){ const L=lab[i]; if(L>=0) grid[i]=fill.get(L); }   // 先铺区色（边界格留待下一步）
+  // 描边色（全图一条）：边界格逐格匹配后取出现最多的色号 —— 抗锯齿混色在多数票下被压掉，
+  // 剩下的是原图描边真正的颜色（黑描边 → 黑），全图共用一条所以描边不再参差（决策 3「跟随原图」）。
+  // 再与相邻区填色比 ΔE，过浅（< LINE_MIN_D）就沿 Lab 的 L 轴逐步压暗后重匹配，直到拉开距离。
+  let lidx=-1;
+  {
+    const cnt=new Map();
+    for(let i=0;i<n;i++){
+      if(!isEdge(i) || data[i*4+3]<40) continue;
+      const p=i*4;
+      const a=adjust(data[p], data[p+1], data[p+2], o.bri, o.con, o.sat);
+      const c=matchStyled(a[0], a[1], a[2], o.STYLE);
+      cnt.set(c, (cnt.get(c)||0)+1);
+    }
+    let bc=0;
+    cnt.forEach((v,k)=>{ if(v>bc || (v===bc && (lidx<0 || k<lidx))){ bc=v; lidx=k; } });
+    if(lidx<0) lidx=matchStyled(0,0,0,o.STYLE);
+  }
+  const near=new Set();
+  for(let i=0;i<n;i++){
+    if(lab[i]>=0 || !isEdge(i)) continue;
+    const x=i%w, y=(i/w)|0;
+    for(let dy=-1;dy<=1;dy++){ const ny=y+dy; if(ny<0||ny>=h) continue;
+      for(let dx=-1;dx<=1;dx++){ const nx=x+dx; if(nx<0||nx>=w) continue;
+        const L=lab[ny*w+nx]; if(L>=0) near.add(L); } }
+  }
+  const dEof=(a,b)=>Math.sqrt((PLA[a]-PLA[b])**2+(PAA[a]-PAA[b])**2+(PBA[a]-PBA[b])**2);
+  const minD=()=>{ let d=Infinity; near.forEach(L=>{ const j=fill.get(L); if(j===undefined) return; const t=dEof(lidx,j); if(t<d) d=t; }); return d; };  if(minD()<LINE_MIN_D){
+    const c0=RGB[lidx];
+    const lcLab=rgbToLab(c0.r, c0.g, c0.b);
+    for(let step=0; step<8 && minD()<LINE_MIN_D; step++){
+      lcLab[0]*=0.85;                                 // 只压 L，保持 a/b（色相不变，只是变暗）
+      const c2=labToRgb(lcLab[0], lcLab[1], lcLab[2]);
+      lidx=matchStyled(c2[0], c2[1], c2[2], o.STYLE);
+    }
+  }
+  // 边界格上色：区分「抗锯齿过渡」与「真描边」。
+  // 过渡格的像素色是两侧区色的**混色**，在 Lab 里落在两区色的连线上（d(pc,A)+d(pc,B) ≈ d(A,B)）；
+  // 真描边是第三种颜色，离线很远。所以：落在连线上 → 归给最像的邻区（不凭空描边）；离线远 → 涂描边色。
+  // 只看「离最近区多远」（nearD<LINE_MIN_D）是不够的：红伞与浅蓝底这种高对比配色，混色格离两边都
+  // 超过 LINE_MIN_D，照样会被误判成描边，在本来没有轮廓的地方描出一条灰边。
+  for(let i=0;i<n;i++){
+    if(!isEdge(i) || lab[i]>=0 || data[i*4+3]<40) continue;
+    const pc=percell[i];
+    if(pc<0){ grid[i]=lidx; continue; }
+    const x=i%w, y=(i/w)|0;
+    // 半径 2 找相邻区色：过渡带常有 2 格厚，带子中间的格在 3×3 里只看得见一侧的区，
+    // 凑不齐「两侧区色」就判不出混色。放宽到 5×5 才拿得到两边的色。
+    const nf=new Set();
+    for(let dy=-2;dy<=2;dy++){ const ny=y+dy; if(ny<0||ny>=h) continue;
+      for(let dx=-2;dx<=2;dx++){ const nx=x+dx; if(nx<0||nx>=w) continue;
+        const L=lab[ny*w+nx]; if(L<0) continue;
+        const j=fill.get(L); if(j!==undefined) nf.add(j); } }
+    let nearFill=-1, nearD=Infinity;
+    nf.forEach(j=>{ const t=dEof(pc,j); if(t<nearD){ nearD=t; nearFill=j; } });
+    // 真描边 vs 抗锯齿过渡：真描边是「比两侧区色都更暗（或都更亮）的第三种颜色」——黑描边格比
+    // 身体色和背景色都暗一大截；过渡格的像素色只是两侧区色的混色，亮度夹在两者之间。
+    // 只判「离最近区多远」不行（高对比配色的混色离两边都远）；改判「落在两色连线上」也不行
+    // ——连线判据太宽容，会把细描边格判成过渡而擦掉，水豚的黑描边被啃成虚线。
+    let isStroke=false;
+    if(nf.size>=2){
+      let minL=Infinity, maxL=-Infinity;
+      nf.forEach(j=>{ const l=PLA[j]; if(l<minL)minL=l; if(l>maxL)maxL=l; });
+      const l=PLA[pc];
+      isStroke = (l<=minL-12) || (l>=maxL+12);
+    }
+    // 补一条：该格自己的颜色本来就接近全图描边色（lidx 取的是边界格逐格匹配的众数），
+    // 那它就是描边本体。细描边（1 格宽）两侧区色离得近时，亮度夹逼判据会漏掉它，只靠上面那条会
+    // 把黑描边啃成虚线（水豚图实测描边格 822→492）。两条取或。
+    if(!isStroke && dEof(pc, lidx) < 30) isStroke=true;
+    grid[i]=(nearFill>=0 && !isStroke) ? nearFill : lidx;
+  }
+  // 小特征救援（最后执行，覆盖区色与描边色）：与「所在区填色」ΔE ≥ FEAT_CONTRAST 的格
+  // （白点/高光/眼睛）会被「一区一色」抹平，单独还原成逐格色。
+  // 连通块按**同色号**分组——不能把「候选块整体必须同色」当成条件：白点核心外面必然裹一圈
+  // 抗锯齿混色格（白→红的中间色），那些格同样是候选，会把整块连成「不同色」而整块作废
+  // （蘑菇白点丢掉的根因）。按色号分组后白点核心自成一坨、混色环自成一圈，互不干扰。
+  // 再加「紧凑度」过滤：面积 ≥3 且填满外接框一半以上。物体边缘那圈细环外接框很大却只有一两格厚，
+  // 填充率远低于阈值，不会被误当特征还原成噪点。
+  {
+    const dE=(a,b)=>Math.sqrt((PLA[a]-PLA[b])**2+(PAA[a]-PAA[b])**2+(PBA[a]-PBA[b])**2);
+    const feat=new Uint8Array(n);
+    for(let i=0;i<n;i++){
+      if(percell[i]<0) continue;
+      const L=lab[i];
+      if(L<0){ feat[i]=1; continue; }              // 被描边吃掉的格：先当候选，交给连通块判据去筛
+      if(dE(percell[i], fill.get(L))>=FEAT_CONTRAST) feat[i]=1;
+    }
+    const seen=new Uint8Array(n), st=new Int32Array(n);
+    for(let i=0;i<n;i++){
+      if(!feat[i] || seen[i]) continue;
+      const code=percell[i];
+      let sp=0; st[sp++]=i; seen[i]=1;
+      const cells=[i];
+      let minx=i%w, maxx=minx, miny=(i/w)|0, maxy=miny;
+      while(sp>0){
+        const k=st[--sp]; const x=k%w, y=(k/w)|0;
+        const push=j=>{
+          if(!feat[j] || seen[j] || percell[j]!==code) return;
+          seen[j]=1; st[sp++]=j; cells.push(j);
+          const jx=j%w, jy=(j/w)|0;
+          if(jx<minx)minx=jx; if(jx>maxx)maxx=jx; if(jy<miny)miny=jy; if(jy>maxy)maxy=jy;
+        };
+        if(x>0) push(k-1);
+        if(x<w-1) push(k+1);
+        if(y>0) push(k-w);
+        if(y<h-1) push(k+w);
+      }
+      const bw=maxx-minx+1, bh=maxy-miny+1;
+      if(cells.length<3) continue;
+      if(cells.length/(bw*bh)>=0.5){
+        for(let c=0;c<cells.length;c++) grid[cells[c]]=code;      // 紧凑块：还原成逐格色
+      } else if(dE(code, lidx)<30){
+        // 细长的块，但颜色就是全图描边色 —— 这是**描边本体**。regionMap 会把脊线格并进最近的区，
+        // 于是长条形的黑描边整段归到了背景区，泛洪后被涂成背景色（水豚图 267 格）。紧凑度判据
+        // 拦的就是这种细长形状，所以这里必须放行，否则黑描边被啃成虚线。
+        for(let c=0;c<cells.length;c++) grid[cells[c]]=lidx;
+      }
+    }
+  }
+  return grid;
 }
 
 /* ============ 风格管线：① 提铅笔线稿 → ② 按风格做笔触 → ③ 处理色块 ============
@@ -3022,6 +3353,7 @@ $('style').addEventListener('click',e=>{
   b.classList.add('on');
   STYLE=b.dataset.v;
   $('styleStrength').style.display = STYLE==='orig' ? 'none' : 'block';
+  autoRegionFill();   // 切到水彩/油画/彩铅时自动关掉区域分割（会被拍平），切回来再自动开
   // 切换风格不重置图纸/原图对照，尊重用户上次的手动选择（默认是图纸）
   saveSettings();
   if(img) generate();
@@ -3163,6 +3495,7 @@ function saveSettings(){
     shape:$('shape').querySelector('.on').dataset.v,
     removeBg:$('removeBg').checked, bgContig:$('bgContig').checked, posterize:$('posterize').checked,
     flatBg:$('flatBg').checked, enhance:$('enhance').checked, regularize:$('regularize').checked,
+    regionFill:$('regionFill').checked, regionFillManual:regionFillManual,
     brightness:+$('brightness').value, contrast:+$('contrast').value, saturation:+$('saturation').value,
     style:STYLE, styleAmount:+$('styleAmount').value, viewOriginal:viewOriginal,
     crop: crop, bgColors: bgColors
@@ -3199,6 +3532,9 @@ function restoreSettings(){
   if(typeof d.flatBg==='boolean') $('flatBg').checked=d.flatBg;
   if(typeof d.enhance==='boolean') $('enhance').checked=d.enhance;
   if(typeof d.regularize==='boolean') $('regularize').checked=d.regularize;
+  // 区域分割填色：旧存档没有这两项 → 保持 HTML 默认（开）。用户手动拨过就记住，不再被智能识别覆盖。
+  if(typeof d.regionFill==='boolean') $('regionFill').checked=d.regionFill;
+  if(d.regionFillManual===true) regionFillManual=true;
   if(d.brightness!=null){ $('brightness').value=d.brightness; $('briVal').textContent=d.brightness; }
   if(d.contrast!=null){ $('contrast').value=d.contrast; $('conVal').textContent=d.contrast; }
   if(d.saturation!=null){ $('saturation').value=d.saturation; $('satVal').textContent=d.saturation; }
